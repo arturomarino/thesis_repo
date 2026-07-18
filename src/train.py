@@ -20,6 +20,37 @@ from training import train_autoencoder_step
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pipeline della tesi MedFormer.")
+    project_root = Path(__file__).resolve().parents[1]
+    parser.add_argument(
+        "--data-path",
+        type=Path,
+        default=project_root / "data/raw/copernicus.nc",
+        help="Percorso del file NetCDF Copernicus.",
+    )
+    parser.add_argument(
+        "--mask-path",
+        type=Path,
+        default=project_root / "data/masks/land_sea_mask.nc",
+        help="Percorso della land-sea mask NetCDF.",
+    )
+    parser.add_argument(
+        "--stats-path",
+        type=Path,
+        default=project_root / "data/processed/normalization_stats.nc",
+        help="Percorso di salvataggio delle statistiche di normalizzazione.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size dei DataLoader.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Numero di worker PyTorch per il caricamento dati.",
+    )
     parser.add_argument(
         "--smoke-test-dataset",
         action="store_true",
@@ -76,17 +107,15 @@ def main() -> None:
         smoke_test_training()
         return
 
-    project_root = Path(__file__).resolve().parents[1]
-
     dm = DataManager(
-        project_root / "data/raw/copernicus.nc",
+        args.data_path,
         chunks={"time": 1},
     )
     ds = dm.load()
 
     preprocessor = Preprocessor(
         ds,
-        project_root / "data/masks/land_sea_mask.nc",
+        args.mask_path,
     )
 
     ds = preprocessor.process()
@@ -99,12 +128,10 @@ def main() -> None:
     print(f"Validation time steps: {splits.validation.sizes['time']}")
     print(f"Test time steps: {splits.test.sizes['time']}")
 
-    stats_path = project_root / "data/processed/normalization_stats.nc"
-
     normalizer = Normalizer()
     normalizer.fit(splits.train)
-    normalizer.save(stats_path)
-    normalizer.load(stats_path)
+    normalizer.save(args.stats_path)
+    normalizer.load(args.stats_path)
 
     normalized_train = normalizer.transform(splits.train)
     normalized_validation = normalizer.transform(splits.validation)
@@ -112,7 +139,7 @@ def main() -> None:
 
     print("Normalizzazione configurata.")
     print(f"Statistiche calcolate: {len(normalizer.statistics)}")
-    print(f"Statistiche salvate in: {stats_path}")
+    print(f"Statistiche salvate in: {args.stats_path}")
     print(f"Train normalizzato: {list(normalized_train.data_vars)}")
     print(f"Validation normalizzato: {list(normalized_validation.data_vars)}")
     print(f"Test normalizzato: {list(normalized_test.data_vars)}")
@@ -124,7 +151,10 @@ def main() -> None:
         train_dataset,
         validation_dataset,
         test_dataset,
-        DataLoaderConfig(batch_size=1, num_workers=0),
+        DataLoaderConfig(
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+        ),
     )
 
     print("PyTorch Dataset configurati in modo lazy.")

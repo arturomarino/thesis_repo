@@ -26,6 +26,19 @@ data/raw/copernicus.nc
 data/masks/land_sea_mask.nc
 ```
 
+Colab example:
+
+```bash
+git clone https://github.com/arturomarino/thesis_repo.git
+cd thesis_repo
+pip install -r requirements.txt
+python src/train.py \
+  --data-path /content/drive/MyDrive/tesi/copernicus.nc \
+  --mask-path /content/drive/MyDrive/tesi/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/tesi/normalization_stats.nc \
+  --first-real-training-step
+```
+
 Quick checks:
 
 ```bash
