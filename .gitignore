@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data and generated artifacts
+data/raw/*
+data/masks/*
+data/processed/*
+outputs/
+
+# Keep directory structure
+!data/raw/.gitkeep
+!data/masks/.gitkeep
+!data/processed/.gitkeep
+
+# Local runtime dependencies
+node_modules
+
+# System files
+.DS_Store
