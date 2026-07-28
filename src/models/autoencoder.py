@@ -5,7 +5,7 @@ Autoencoder volumetrico basato su backbone U-Net 3D.
 
 Responsabilita':
 - comprimere le variabili oceanografiche 3D in un latent space;
-- ricostruire il volume 3D originale;
+- predire media e varianza del volume 3D originale;
 - esporre metodi encode/decode utili alla futura latent diffusion.
 
 Non esegue:
@@ -77,11 +77,20 @@ class VolumeUNetAutoencoder(nn.Module):
             skip_channels=base,
             out_channels=base,
         )
-        self.output_projection = nn.Conv3d(
+        self.mean_projection = nn.Conv3d(
             base,
             self.config.output_channels,
             kernel_size=1,
         )
+        self.log_variance_projection = nn.Conv3d(
+            base,
+            self.config.output_channels,
+            kernel_size=1,
+        )
+
+        # sigma^2 = 1 e' un punto di partenza neutro e stabile.
+        nn.init.zeros_(self.log_variance_projection.weight)
+        nn.init.zeros_(self.log_variance_projection.bias)
 
     def encode(
         self,
@@ -98,20 +107,23 @@ class VolumeUNetAutoencoder(nn.Module):
         self,
         latent: torch.Tensor,
         skips: tuple[torch.Tensor, torch.Tensor],
-    ) -> torch.Tensor:
-        """Ricostruisce il volume a partire dal latent space."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Predice ``mu`` e ``log(sigma^2)`` a partire dal latent space."""
 
         skip_1, skip_2 = skips
         x = self.decoder_2(latent, skip_2)
         x = self.decoder_1(x, skip_1)
-        return self.output_projection(x)
+        mean = self.mean_projection(x)
+        log_variance = self.log_variance_projection(x)
+        return mean, log_variance
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Esegue ricostruzione e restituisce anche il latent space."""
+        """Restituisce i parametri della distribuzione e il latent space."""
 
         latent, skips = self.encode(x)
-        reconstruction = self.decode(latent, skips)
+        mean, log_variance = self.decode(latent, skips)
         return {
-            "reconstruction": reconstruction,
+            "mean": mean,
+            "log_variance": log_variance,
             "latent": latent,
         }

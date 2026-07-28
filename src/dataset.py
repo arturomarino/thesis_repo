@@ -6,16 +6,17 @@ Conversione lazy dei dataset Xarray normalizzati in campioni PyTorch.
 Responsabilita':
 - rappresentare separatamente volume oceanico e superficie;
 - materializzare soltanto lo stato temporale richiesto;
+- creare coppie previsionali ``t -> t+1``;
 - conservare una maschera dei valori oceanici validi.
 
 Non esegue:
 - split o normalizzazione;
 - batching;
-- creazione di coppie temporali per il diffusion model;
 - training del modello.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TypedDict
 
 import numpy as np
@@ -41,6 +42,22 @@ class OceanStateSample(TypedDict):
     time_index: int
 
 
+class OceanVolume(TypedDict):
+    """Volume 3D multivariato e relativa maschera."""
+
+    volume: torch.Tensor
+    volume_mask: torch.Tensor
+
+
+class OceanForecastSample(TypedDict):
+    """Coppia supervisionata: stato odierno e target del giorno successivo."""
+
+    input: OceanVolume
+    target: OceanVolume
+    input_time_index: int
+    target_time_index: int
+
+
 @dataclass(frozen=True)
 class OceanDatasetConfig:
     """Nomi delle dimensioni usate dal dataset Copernicus."""
@@ -61,10 +78,8 @@ class OceanStateDataset(Dataset[OceanStateSample]):
     ``[1, latitudine, longitudine]``: replicarla lungo la profondita'
     introdurrebbe informazione artificiale.
 
-    Questa rappresentazione e' adatta alla prima fase della tesi, nella quale
-    l'autoencoder ricostruisce lo stesso stato ricevuto in ingresso. Le future
-    coppie temporali del diffusion model saranno responsabilita' di un dataset
-    dedicato.
+    Questa rappresentazione di base viene riutilizzata da
+    ``OceanForecastDataset`` per costruire le coppie temporali supervisionate.
 
     I NaN prodotti dalla land-sea mask vengono sostituiti con zero soltanto nel
     tensore materializzato. Le corrispondenti maschere booleane permettono al
@@ -153,18 +168,24 @@ class OceanStateDataset(Dataset[OceanStateSample]):
         )
 
     def _materialize_state(self, time_index: int) -> OceanState:
-        volume, volume_mask = self._to_tensor_pair(
-            self._volume.isel({self.config.time_dim: time_index})
-        )
+        volume_state = self._materialize_volume(time_index)
         surface, surface_mask = self._to_tensor_pair(
             self._surface.isel({self.config.time_dim: time_index})
         )
 
         return {
-            "volume": volume,
-            "volume_mask": volume_mask,
+            **volume_state,
             "surface": surface,
             "surface_mask": surface_mask,
+        }
+
+    def _materialize_volume(self, time_index: int) -> OceanVolume:
+        volume, volume_mask = self._to_tensor_pair(
+            self._volume.isel({self.config.time_dim: time_index})
+        )
+        return {
+            "volume": volume,
+            "volume_mask": volume_mask,
         }
 
     @staticmethod
@@ -257,3 +278,90 @@ class OceanStateDataset(Dataset[OceanStateSample]):
             raise ValueError(
                 "La coordinata temporale deve essere crescente e senza duplicati."
             )
+
+
+class OceanForecastDataset(Dataset[OceanForecastSample]):
+    """
+    Espone coppie consecutive ``volume(t) -> volume(t+1)``.
+
+    Il modello riceve soltanto le quattro variabili volumetriche. ``zos_cglo``
+    resta esclusa sia dall'input sia dal target previsionale.
+    """
+
+    DEFAULT_VOLUME_VARIABLES = OceanStateDataset.DEFAULT_VOLUME_VARIABLES
+
+    def __init__(
+        self,
+        dataset: xr.Dataset,
+        config: OceanDatasetConfig | None = None,
+        volume_variables: tuple[
+            str, ...
+        ] = OceanStateDataset.DEFAULT_VOLUME_VARIABLES,
+        forecast_horizon: int = 1,
+        require_daily_steps: bool = True,
+    ) -> None:
+        if forecast_horizon <= 0:
+            raise ValueError("forecast_horizon deve essere positivo.")
+
+        self.forecast_horizon = forecast_horizon
+        self._states = OceanStateDataset(
+            dataset=dataset,
+            config=config,
+            volume_variables=volume_variables,
+        )
+
+        if len(self._states) <= self.forecast_horizon:
+            raise ValueError(
+                "Il dataset deve contenere piu' time step "
+                "dell'orizzonte previsionale."
+            )
+
+        if require_daily_steps:
+            self._validate_daily_steps()
+
+    def __len__(self) -> int:
+        return len(self._states) - self.forecast_horizon
+
+    def __getitem__(self, index: int) -> OceanForecastSample:
+        index = self._normalize_index(index)
+        target_index = index + self.forecast_horizon
+        return {
+            "input": self._states._materialize_volume(index),
+            "target": self._states._materialize_volume(target_index),
+            "input_time_index": index,
+            "target_time_index": target_index,
+        }
+
+    @property
+    def volume_shape(self) -> tuple[int, int, int, int]:
+        return self._states.volume_shape
+
+    def _normalize_index(self, index: int) -> int:
+        if not isinstance(index, int) or isinstance(index, bool):
+            raise TypeError("L'indice del campione deve essere un intero.")
+
+        length = len(self)
+        if index < 0:
+            index += length
+
+        if index < 0 or index >= length:
+            raise IndexError(
+                f"Indice {index} fuori intervallo per {length} coppie."
+            )
+
+        return index
+
+    def _validate_daily_steps(self) -> None:
+        time_dim = self._states.config.time_dim
+        time_index = self._states.dataset.indexes[time_dim]
+        expected_delta = timedelta(days=self.forecast_horizon)
+
+        for input_index in range(len(self)):
+            target_index = input_index + self.forecast_horizon
+            actual_delta = time_index[target_index] - time_index[input_index]
+            if actual_delta != expected_delta:
+                raise ValueError(
+                    "La coppia previsionale non corrisponde a giorni "
+                    "consecutivi: "
+                    f"{time_index[input_index]} -> {time_index[target_index]}."
+                )

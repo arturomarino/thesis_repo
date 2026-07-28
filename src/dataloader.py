@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from torch.utils.data import DataLoader
 
-from dataset import OceanStateDataset, OceanStateSample
+from dataset import OceanForecastDataset, OceanForecastSample
 
 
 @dataclass(frozen=True)
@@ -48,15 +48,15 @@ class DataLoaderConfig:
 class OceanDataLoaders:
     """Contenitore tipizzato per i tre DataLoader della pipeline."""
 
-    train: DataLoader[OceanStateSample]
-    validation: DataLoader[OceanStateSample]
-    test: DataLoader[OceanStateSample]
+    train: DataLoader[OceanForecastSample]
+    validation: DataLoader[OceanForecastSample]
+    test: DataLoader[OceanForecastSample]
 
 
 def create_ocean_dataloaders(
-    train_dataset: OceanStateDataset,
-    validation_dataset: OceanStateDataset,
-    test_dataset: OceanStateDataset,
+    train_dataset: OceanForecastDataset,
+    validation_dataset: OceanForecastDataset,
+    test_dataset: OceanForecastDataset,
     config: DataLoaderConfig | None = None,
 ) -> OceanDataLoaders:
     """Crea DataLoader coerenti per train, validation e test."""
@@ -87,10 +87,10 @@ def create_ocean_dataloaders(
 
 
 def _create_loader(
-    dataset: OceanStateDataset,
+    dataset: OceanForecastDataset,
     config: DataLoaderConfig,
     shuffle: bool,
-) -> DataLoader[OceanStateSample]:
+) -> DataLoader[OceanForecastSample]:
     return DataLoader(
         dataset,
         batch_size=config.batch_size,

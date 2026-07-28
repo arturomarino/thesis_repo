@@ -16,36 +16,20 @@ Non esegue:
 
 from dataclasses import dataclass
 
+import numpy as np
 import xarray as xr
 
 
 @dataclass(frozen=True)
 class TemporalSplitConfig:
     """
-    Configurazione dello split temporale.
+    Configurazione dello split temporale per anni di calendario.
 
-    Le frazioni devono sommare a 1.0. Lo split e' sequenziale:
-    la parte iniziale diventa training set, la successiva validation set,
-    la parte finale test set.
+    L'ultimo anno disponibile viene riservato al test, il penultimo alla
+    validation e tutti gli anni precedenti al training.
     """
 
-    train_fraction: float = 0.70
-    validation_fraction: float = 0.15
-    test_fraction: float = 0.15
     time_dim: str = "time"
-
-    def __post_init__(self) -> None:
-        fractions = (
-            self.train_fraction,
-            self.validation_fraction,
-            self.test_fraction,
-        )
-
-        if any(fraction <= 0 for fraction in fractions):
-            raise ValueError("Le frazioni dello split devono essere positive.")
-
-        if not abs(sum(fractions) - 1.0) < 1e-6:
-            raise ValueError("Le frazioni dello split devono sommare a 1.0.")
 
 
 @dataclass(frozen=True)
@@ -75,19 +59,18 @@ class TemporalSplitter:
 
         self._validate_dataset(dataset)
 
-        n_time = dataset.sizes[self.config.time_dim]
-        train_end = int(n_time * self.config.train_fraction)
-        validation_end = train_end + int(
-            n_time * self.config.validation_fraction
-        )
+        years = self._extract_years(dataset)
+        unique_years = np.unique(years)
+        self._validate_years(unique_years)
 
-        self._validate_boundaries(n_time, train_end, validation_end)
+        validation_year = int(unique_years[-2])
+        test_year = int(unique_years[-1])
 
-        train = dataset.isel({self.config.time_dim: slice(0, train_end)})
+        train = dataset.isel({self.config.time_dim: years < validation_year})
         validation = dataset.isel(
-            {self.config.time_dim: slice(train_end, validation_end)}
+            {self.config.time_dim: years == validation_year}
         )
-        test = dataset.isel({self.config.time_dim: slice(validation_end, None)})
+        test = dataset.isel({self.config.time_dim: years == test_year})
 
         return TemporalSplits(train=train, validation=validation, test=test)
 
@@ -97,24 +80,24 @@ class TemporalSplitter:
                 f"Dimensione temporale non trovata: {self.config.time_dim}"
             )
 
-    def _validate_boundaries(
-        self,
-        n_time: int,
-        train_end: int,
-        validation_end: int,
-    ) -> None:
-        if n_time < 3:
+    def _extract_years(self, dataset: xr.Dataset) -> np.ndarray:
+        try:
+            years = dataset[self.config.time_dim].dt.year.values
+        except (AttributeError, TypeError) as error:
             raise ValueError(
-                "Servono almeno 3 time step per creare train/validation/test."
+                "La coordinata temporale deve contenere date interpretabili."
+            ) from error
+
+        return np.asarray(years)
+
+    @staticmethod
+    def _validate_years(unique_years: np.ndarray) -> None:
+        if unique_years.size < 3:
+            raise ValueError(
+                "Servono almeno tre anni distinti: training, validation e test."
             )
 
-        if train_end == 0:
-            raise ValueError("Training set vuoto: aumenta train_fraction.")
-
-        if validation_end <= train_end:
+        if int(unique_years[-1]) - int(unique_years[-2]) != 1:
             raise ValueError(
-                "Validation set vuoto: aumenta validation_fraction."
+                "Gli ultimi due anni disponibili devono essere consecutivi."
             )
-
-        if validation_end >= n_time:
-            raise ValueError("Test set vuoto: aumenta test_fraction.")

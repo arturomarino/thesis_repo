@@ -10,12 +10,17 @@ from dask.base import is_dask_collection
 
 from data_manager import DataManager
 from dataloader import DataLoaderConfig, create_ocean_dataloaders
-from dataset import OceanStateDataset
+from dataset import OceanForecastDataset, OceanStateDataset
 from models.autoencoder import VolumeAutoencoderConfig, VolumeUNetAutoencoder
 from normalization import Normalizer
 from preprocessing import Preprocessor
 from split import TemporalSplitter
-from training import train_autoencoder_step
+from training import (
+    fit_forecaster,
+    read_forecaster_checkpoint,
+    run_forecast_epoch,
+    train_autoencoder_step,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +55,70 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Numero di worker PyTorch per il caricamento dati.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="Numero massimo di epoche.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=10,
+        help="Epoche senza miglioramento prima dell'early stopping.",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=1e-4,
+        help="Learning rate di AdamW.",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-4,
+        help="Weight decay di AdamW.",
+    )
+    parser.add_argument(
+        "--base-channels",
+        type=int,
+        default=8,
+        help="Canali base della U-Net 3D.",
+    )
+    parser.add_argument(
+        "--latent-channels",
+        type=int,
+        default=32,
+        help="Canali del latent space.",
+    )
+    parser.add_argument(
+        "--checkpoint-path",
+        type=Path,
+        default=project_root / "checkpoints/best_forecaster.pt",
+        help="Percorso del checkpoint migliore.",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda", "mps"),
+        default="auto",
+        help="Device PyTorch; auto seleziona il migliore disponibile.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seed PyTorch per la riproducibilita'.",
+    )
+    parser.add_argument(
+        "--train-model",
+        action="store_true",
+        help="Avvia esplicitamente il training completo.",
+    )
+    parser.add_argument(
+        "--evaluate-test",
+        action="store_true",
+        help="Valuta sul test annuale un checkpoint gia' addestrato.",
     )
     parser.add_argument(
         "--smoke-test-dataset",
@@ -107,6 +176,9 @@ def main() -> None:
         smoke_test_training()
         return
 
+    device = resolve_device(args.device)
+    torch.manual_seed(args.seed)
+
     dm = DataManager(
         args.data_path,
         chunks={"time": 1},
@@ -124,6 +196,10 @@ def main() -> None:
     splits = splitter.split(ds)
 
     print("Temporal split completato.")
+    print(
+        "Training: anni precedenti; validation: penultimo anno; "
+        "test: ultimo anno."
+    )
     print(f"Train time steps: {splits.train.sizes['time']}")
     print(f"Validation time steps: {splits.validation.sizes['time']}")
     print(f"Test time steps: {splits.test.sizes['time']}")
@@ -144,9 +220,9 @@ def main() -> None:
     print(f"Validation normalizzato: {list(normalized_validation.data_vars)}")
     print(f"Test normalizzato: {list(normalized_test.data_vars)}")
 
-    train_dataset = OceanStateDataset(normalized_train)
-    validation_dataset = OceanStateDataset(normalized_validation)
-    test_dataset = OceanStateDataset(normalized_test)
+    train_dataset = OceanForecastDataset(normalized_train)
+    validation_dataset = OceanForecastDataset(normalized_validation)
+    test_dataset = OceanForecastDataset(normalized_test)
     loaders = create_ocean_dataloaders(
         train_dataset,
         validation_dataset,
@@ -154,21 +230,120 @@ def main() -> None:
         DataLoaderConfig(
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
         ),
     )
 
-    print("PyTorch Dataset configurati in modo lazy.")
-    print(f"Campioni train: {len(train_dataset)}")
-    print(f"Campioni validation: {len(validation_dataset)}")
-    print(f"Campioni test: {len(test_dataset)}")
+    print("Dataset previsionali t -> t+1 configurati in modo lazy.")
+    print(f"Coppie train: {len(train_dataset)}")
+    print(f"Coppie validation: {len(validation_dataset)}")
+    print(f"Coppie test: {len(test_dataset)}")
     print(f"Forma volume: {train_dataset.volume_shape}")
-    print(f"Forma superficie: {train_dataset.surface_shape}")
     print("DataLoader configurati.")
     print(f"Batch size train: {loaders.train.batch_size}")
     print(f"Num workers train: {loaders.train.num_workers}")
+    print(f"Device selezionato: {device}")
 
     if args.first_real_training_step:
         run_first_real_training_step(loaders.train)
+
+    if args.train_model:
+        run_full_training(args, loaders.train, loaders.validation, device)
+
+    if args.evaluate_test:
+        evaluate_test_checkpoint(args, loaders.test, device)
+
+
+def resolve_device(requested_device: str) -> torch.device:
+    """Seleziona il device richiesto verificandone la disponibilita'."""
+
+    if requested_device == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    if requested_device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA richiesta ma non disponibile.")
+    if requested_device == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS richiesto ma non disponibile.")
+    return torch.device(requested_device)
+
+
+def build_forecaster(args: argparse.Namespace, device: torch.device):
+    """Costruisce il previsore probabilistico configurato dalla CLI."""
+
+    return VolumeUNetAutoencoder(
+        VolumeAutoencoderConfig(
+            input_channels=4,
+            output_channels=4,
+            base_channels=args.base_channels,
+            latent_channels=args.latent_channels,
+        )
+    ).to(device)
+
+
+def run_full_training(
+    args: argparse.Namespace,
+    train_loader,
+    validation_loader,
+    device: torch.device,
+) -> None:
+    """Avvia il training soltanto quando e' presente ``--train-model``."""
+
+    model = build_forecaster(args, device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+    )
+    result = fit_forecaster(
+        model=model,
+        train_batches=train_loader,
+        validation_batches=validation_loader,
+        optimizer=optimizer,
+        device=device,
+        epochs=args.epochs,
+        patience=args.patience,
+        checkpoint_path=args.checkpoint_path,
+    )
+
+    print("Training completato.")
+    print(f"Epoca migliore: {result.best_epoch}")
+    print(f"Validation NLL migliore: {result.best_validation_nll:.6f}")
+    print(f"Checkpoint: {result.checkpoint_path}")
+
+
+def evaluate_test_checkpoint(
+    args: argparse.Namespace,
+    test_loader,
+    device: torch.device,
+) -> None:
+    """Valuta il test set solo su richiesta esplicita."""
+
+    checkpoint = read_forecaster_checkpoint(args.checkpoint_path, device)
+    saved_config = checkpoint.get("model_config")
+    if not isinstance(saved_config, dict):
+        raise ValueError("Configurazione del modello assente nel checkpoint.")
+
+    model = VolumeUNetAutoencoder(
+        VolumeAutoencoderConfig(**saved_config)
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    metrics = run_forecast_epoch(
+        model=model,
+        batches=test_loader,
+        device=device,
+    )
+
+    print(f"Checkpoint epoca: {checkpoint['epoch']}")
+    print(f"Test Gaussian NLL: {metrics.gaussian_nll:.6f}")
+    print(f"Test RMSE: {metrics.rmse:.6f}")
+    print(
+        "Test coverage 68/95: "
+        f"{metrics.coverage_68:.3f}/{metrics.coverage_95:.3f}"
+    )
 
 
 def smoke_test_dataset() -> None:
@@ -188,7 +363,10 @@ def smoke_test_dataset() -> None:
     surface_data[:, 0, 0] = np.nan
 
     coords = {
-        "time": np.arange(n_time),
+        "time": np.arange(
+            np.datetime64("2024-01-01"),
+            np.datetime64("2024-01-01") + np.timedelta64(n_time, "D"),
+        ),
         "depth": np.arange(n_depth),
         "latitude": np.arange(n_latitude),
         "longitude": np.arange(n_longitude),
@@ -212,20 +390,34 @@ def smoke_test_dataset() -> None:
 
     ocean_dataset = OceanStateDataset(dataset)
     sample = ocean_dataset[0]
+    forecast_dataset = OceanForecastDataset(dataset)
+    forecast_sample = forecast_dataset[0]
 
     assert len(ocean_dataset) == n_time
+    assert len(forecast_dataset) == n_time - 1
     assert sample["state"]["volume"].shape == (4, 2, 3, 4)
     assert sample["state"]["surface"].shape == (1, 3, 4)
     assert sample["time_index"] == 0
     assert torch.isfinite(sample["state"]["volume"]).all()
     assert not sample["state"]["volume_mask"][0, 0, 0, 0]
     assert sample["state"]["volume"][0, 0, 0, 0] == 0
+    assert forecast_sample["input_time_index"] == 0
+    assert forecast_sample["target_time_index"] == 1
+    assert torch.equal(
+        forecast_sample["input"]["volume"],
+        ocean_dataset[0]["state"]["volume"],
+    )
+    assert torch.equal(
+        forecast_sample["target"]["volume"],
+        ocean_dataset[1]["state"]["volume"],
+    )
 
     print("Smoke test PyTorch Dataset superato.")
     print(f"Campioni: {len(ocean_dataset)}")
     print(f"Volume: {tuple(sample['state']['volume'].shape)}")
     print(f"Superficie: {tuple(sample['state']['surface'].shape)}")
     print("NaN mascherati e sostituiti con zero: OK")
+    print("Coppia previsionale t -> t+1: OK")
 
 
 def smoke_test_normalization() -> None:
@@ -296,7 +488,7 @@ def smoke_test_normalization() -> None:
 def smoke_test_dataloader() -> None:
     """Verifica il batching PyTorch senza leggere il file Copernicus."""
 
-    n_time, n_depth, n_latitude, n_longitude = 6, 2, 3, 4
+    n_time, n_depth, n_latitude, n_longitude = 8, 2, 3, 4
     volume_shape = (n_time, n_depth, n_latitude, n_longitude)
     surface_shape = (n_time, n_latitude, n_longitude)
 
@@ -310,7 +502,10 @@ def smoke_test_dataloader() -> None:
     surface_data[:, 0, 0] = np.nan
 
     coords = {
-        "time": np.arange(n_time),
+        "time": np.arange(
+            np.datetime64("2024-01-01"),
+            np.datetime64("2024-01-01") + np.timedelta64(n_time, "D"),
+        ),
         "depth": np.arange(n_depth),
         "latitude": np.arange(n_latitude),
         "longitude": np.arange(n_longitude),
@@ -332,9 +527,9 @@ def smoke_test_dataloader() -> None:
         coords=coords,
     )
 
-    train_dataset = OceanStateDataset(dataset.isel(time=slice(0, 4)))
-    validation_dataset = OceanStateDataset(dataset.isel(time=slice(4, 5)))
-    test_dataset = OceanStateDataset(dataset.isel(time=slice(5, 6)))
+    train_dataset = OceanForecastDataset(dataset.isel(time=slice(0, 4)))
+    validation_dataset = OceanForecastDataset(dataset.isel(time=slice(4, 6)))
+    test_dataset = OceanForecastDataset(dataset.isel(time=slice(6, 8)))
 
     loaders = create_ocean_dataloaders(
         train_dataset,
@@ -347,23 +542,25 @@ def smoke_test_dataloader() -> None:
     validation_batch = next(iter(loaders.validation))
     test_batch = next(iter(loaders.test))
 
-    assert train_batch["state"]["volume"].shape == (2, 4, 2, 3, 4)
-    assert train_batch["state"]["surface"].shape == (2, 1, 3, 4)
-    assert train_batch["state"]["volume_mask"].shape == (2, 4, 2, 3, 4)
-    assert train_batch["state"]["surface_mask"].shape == (2, 1, 3, 4)
-    assert validation_batch["time_index"].tolist() == [0]
-    assert test_batch["time_index"].tolist() == [0]
+    assert train_batch["input"]["volume"].shape == (2, 4, 2, 3, 4)
+    assert train_batch["target"]["volume"].shape == (2, 4, 2, 3, 4)
+    assert train_batch["input"]["volume_mask"].shape == (2, 4, 2, 3, 4)
+    assert train_batch["target"]["volume_mask"].shape == (2, 4, 2, 3, 4)
+    assert validation_batch["input_time_index"].tolist() == [0]
+    assert validation_batch["target_time_index"].tolist() == [1]
+    assert test_batch["input_time_index"].tolist() == [0]
+    assert test_batch["target_time_index"].tolist() == [1]
     assert loaders.train.batch_size == 2
     assert loaders.train.num_workers == 0
 
     print("Smoke test DataLoader superato.")
-    print(f"Batch volume train: {tuple(train_batch['state']['volume'].shape)}")
-    print(f"Batch superficie train: {tuple(train_batch['state']['surface'].shape)}")
+    print(f"Input train: {tuple(train_batch['input']['volume'].shape)}")
+    print(f"Target t+1: {tuple(train_batch['target']['volume'].shape)}")
     print("Validation/test senza shuffle: OK")
 
 
 def smoke_test_autoencoder() -> None:
-    """Verifica forme di ricostruzione e latent space."""
+    """Verifica forme dei parametri probabilistici e latent space."""
 
     batch_size, channels, depth, height, width = 1, 4, 46, 65, 171
     model = VolumeUNetAutoencoder(
@@ -379,10 +576,13 @@ def smoke_test_autoencoder() -> None:
     with torch.no_grad():
         output = model(x)
 
-    reconstruction = output["reconstruction"]
+    mean = output["mean"]
+    log_variance = output["log_variance"]
     latent = output["latent"]
 
-    assert reconstruction.shape == x.shape
+    assert mean.shape == x.shape
+    assert log_variance.shape == x.shape
+    assert torch.all(log_variance == 0)
     assert latent.ndim == 5
     assert latent.shape[0] == batch_size
     assert latent.shape[1] == 16
@@ -393,26 +593,31 @@ def smoke_test_autoencoder() -> None:
     print("Smoke test Autoencoder superato.")
     print(f"Input volume: {tuple(x.shape)}")
     print(f"Latent space: {tuple(latent.shape)}")
-    print(f"Ricostruzione: {tuple(reconstruction.shape)}")
+    print(f"Media predetta: {tuple(mean.shape)}")
+    print(f"Log-varianza predetta: {tuple(log_variance.shape)}")
 
 
 def smoke_test_training() -> None:
     """Verifica che loss, backward e optimizer step funzionino."""
 
     batch_size, channels, depth, height, width = 2, 4, 8, 10, 12
-    volume = torch.randn(batch_size, channels, depth, height, width)
-    mask = torch.ones_like(volume, dtype=torch.bool)
+    input_volume = torch.randn(batch_size, channels, depth, height, width)
+    target_volume = torch.randn(batch_size, channels, depth, height, width)
+    mask = torch.ones_like(target_volume, dtype=torch.bool)
     mask[:, :, :, 0, 0] = False
-    volume = volume.masked_fill(~mask, 0.0)
+    target_volume = target_volume.masked_fill(~mask, 0.0)
 
     batch = {
-        "state": {
-            "volume": volume,
-            "volume_mask": mask,
-            "surface": torch.zeros(batch_size, 1, height, width),
-            "surface_mask": torch.ones(batch_size, 1, height, width, dtype=torch.bool),
+        "input": {
+            "volume": input_volume,
+            "volume_mask": torch.ones_like(input_volume, dtype=torch.bool),
         },
-        "time_index": torch.arange(batch_size),
+        "target": {
+            "volume": target_volume,
+            "volume_mask": mask,
+        },
+        "input_time_index": torch.arange(batch_size),
+        "target_time_index": torch.arange(1, batch_size + 1),
     }
 
     model = VolumeUNetAutoencoder(
@@ -431,13 +636,15 @@ def smoke_test_training() -> None:
         device=torch.device("cpu"),
     )
 
-    assert metrics.loss > 0
+    assert np.isfinite(metrics.loss)
+    assert metrics.mean_mse > 0
     assert metrics.valid_points == int(mask.sum())
     assert metrics.latent_shape[0] == batch_size
     assert metrics.latent_shape[1] == 8
 
     print("Smoke test training autoencoder superato.")
-    print(f"Loss: {metrics.loss:.6f}")
+    print(f"Gaussian NLL: {metrics.loss:.6f}")
+    print(f"MSE della media: {metrics.mean_mse:.6f}")
     print(f"Punti validi: {metrics.valid_points}")
     print(f"Latent space: {metrics.latent_shape}")
 
@@ -466,7 +673,8 @@ def run_first_real_training_step(train_loader) -> None:
 
     print("Primo training step reale completato.")
     print(f"Device: {device}")
-    print(f"Loss: {metrics.loss:.6f}")
+    print(f"Gaussian NLL: {metrics.loss:.6f}")
+    print(f"MSE della media: {metrics.mean_mse:.6f}")
     print(f"Punti oceanici validi: {metrics.valid_points}")
     print(f"Latent space: {metrics.latent_shape}")
 
