@@ -132,6 +132,11 @@ def parse_args() -> argparse.Namespace:
         help="Riprende dal checkpoint dell'ultima epoca salvata.",
     )
     parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disattiva le barre di avanzamento batch per batch.",
+    )
+    parser.add_argument(
         "--evaluate-test",
         action="store_true",
         help="Valuta sul test annuale un checkpoint gia' addestrato.",
@@ -361,6 +366,7 @@ def run_full_training(
         patience=args.patience,
         checkpoint_path=args.checkpoint_path,
         resume_checkpoint=resume_checkpoint,
+        show_progress=not args.no_progress,
     )
 
     print("Training completato.")

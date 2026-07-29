@@ -24,6 +24,11 @@ from torch import nn
 from dataset import OceanForecastSample
 from losses import masked_gaussian_nll_loss, masked_mse_loss
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - optional UI dependency
+    tqdm = None
+
 
 @dataclass(frozen=True)
 class AutoencoderTrainMetrics:
@@ -100,6 +105,7 @@ def run_forecast_epoch(
     batches: Iterable[OceanForecastSample],
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
+    progress_label: str | None = None,
 ) -> ForecastEpochMetrics:
     """
     Esegue un'epoca.
@@ -117,7 +123,19 @@ def run_forecast_epoch(
     coverage_95_count = 0
     valid_points_total = 0
 
-    for batch in batches:
+    iterable = batches
+    progress_bar = None
+    if progress_label is not None and tqdm is not None:
+        progress_bar = tqdm(
+            batches,
+            desc=progress_label,
+            total=len(batches) if hasattr(batches, "__len__") else None,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        iterable = progress_bar
+
+    for batch in iterable:
         input_volume = batch["input"]["volume"].to(
             device,
             non_blocking=True,
@@ -176,6 +194,13 @@ def run_forecast_epoch(
                 ).sum().item()
             )
             valid_points_total += valid_points
+            if progress_bar is not None:
+                progress_bar.set_postfix(
+                    nll=f"{nll_sum / valid_points_total:.4f}",
+                    rmse=(
+                        f"{(squared_error_sum / valid_points_total) ** 0.5:.4f}"
+                    ),
+                )
 
     if valid_points_total == 0:
         raise ValueError("L'epoca non contiene punti oceanici validi.")
@@ -202,6 +227,7 @@ def fit_forecaster(
     patience: int,
     checkpoint_path: Path,
     resume_checkpoint: dict[str, object] | None = None,
+    show_progress: bool = True,
 ) -> ForecastFitResult:
     """Addestra con early stopping e ripresa da un checkpoint opzionale."""
 
@@ -240,11 +266,19 @@ def fit_forecaster(
             batches=train_batches,
             device=device,
             optimizer=optimizer,
+            progress_label=(
+                f"Train epoch {epoch}/{epochs}" if show_progress else None
+            ),
         )
         validation_metrics = run_forecast_epoch(
             model=model,
             batches=validation_batches,
             device=device,
+            progress_label=(
+                f"Validation epoch {epoch}/{epochs}"
+                if show_progress
+                else None
+            ),
         )
         history.append(
             {
