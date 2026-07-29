@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
         help="Percorso di salvataggio delle statistiche di normalizzazione.",
     )
     parser.add_argument(
+        "--reuse-stats",
+        action="store_true",
+        help="Carica statistiche gia' salvate invece di ricalcolarle.",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=1,
@@ -120,6 +125,11 @@ def parse_args() -> argparse.Namespace:
         "--train-model",
         action="store_true",
         help="Avvia esplicitamente il training completo.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Riprende dal checkpoint dell'ultima epoca salvata.",
     )
     parser.add_argument(
         "--evaluate-test",
@@ -213,11 +223,20 @@ def main() -> None:
     print(f"Validation time steps: {splits.validation.sizes['time']}")
     print(f"Test time steps: {splits.test.sizes['time']}")
 
-    print("Calcolo delle statistiche di normalizzazione sul training set...")
     normalizer = Normalizer(scheduler="single-threaded")
-    normalizer.fit(splits.train)
-    normalizer.save(args.stats_path)
-    normalizer.load(args.stats_path)
+    if args.reuse_stats:
+        if not args.stats_path.exists():
+            raise FileNotFoundError(
+                "Statistiche non trovate: eseguire prima la preparazione "
+                "senza --reuse-stats."
+            )
+        normalizer.load(args.stats_path)
+        print(f"Statistiche caricate da: {args.stats_path}")
+    else:
+        print("Calcolo delle statistiche di normalizzazione sul training set...")
+        normalizer.fit(splits.train)
+        normalizer.save(args.stats_path)
+        normalizer.load(args.stats_path)
 
     normalized_train = normalizer.transform(splits.train)
     normalized_validation = normalizer.transform(splits.validation)
@@ -308,6 +327,30 @@ def run_full_training(
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
+    resume_checkpoint = None
+    if args.resume:
+        last_checkpoint_path = args.checkpoint_path.with_name(
+            f"{args.checkpoint_path.stem}_last"
+            f"{args.checkpoint_path.suffix}"
+        )
+        resume_checkpoint = read_forecaster_checkpoint(
+            last_checkpoint_path,
+            device,
+        )
+        saved_config = resume_checkpoint.get("model_config")
+        if saved_config != {
+            "input_channels": 4,
+            "output_channels": 4,
+            "base_channels": args.base_channels,
+            "latent_channels": args.latent_channels,
+        }:
+            raise ValueError(
+                "La configurazione richiesta non coincide con il checkpoint."
+            )
+        model.load_state_dict(resume_checkpoint["model_state_dict"])
+        optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+        print(f"Ripresa dall'epoca {resume_checkpoint['epoch']}.")
+
     result = fit_forecaster(
         model=model,
         train_batches=train_loader,
@@ -317,12 +360,14 @@ def run_full_training(
         epochs=args.epochs,
         patience=args.patience,
         checkpoint_path=args.checkpoint_path,
+        resume_checkpoint=resume_checkpoint,
     )
 
     print("Training completato.")
     print(f"Epoca migliore: {result.best_epoch}")
     print(f"Validation NLL migliore: {result.best_validation_nll:.6f}")
     print(f"Checkpoint: {result.checkpoint_path}")
+    print(f"Checkpoint di ripresa: {result.last_checkpoint_path}")
 
 
 def evaluate_test_checkpoint(

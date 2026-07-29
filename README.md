@@ -52,11 +52,11 @@ git clone https://github.com/arturomarino/thesis_repo.git
 cd thesis_repo
 pip install -r requirements.txt
 # Copia locale: evita di calcolare le statistiche leggendo 18 GB da Drive.
-cp /content/drive/MyDrive/thesis/glorys12_med_test_1994_2003.nc /content/
+cp /content/drive/MyDrive/Thesis/glorys12_med_test_1994_2003.nc /content/
 python src/train.py \
   --data-path /content/glorys12_med_test_1994_2003.nc \
-  --mask-path /content/drive/MyDrive/thesis/land_sea_mask.nc \
-  --stats-path /content/drive/MyDrive/thesis/normalization_stats.nc \
+  --mask-path /content/drive/MyDrive/Thesis/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/Thesis/normalization_stats.nc \
   --time-chunk 16
 ```
 
@@ -65,9 +65,10 @@ Training starts only with the explicit `--train-model` flag:
 ```bash
 python src/train.py \
   --data-path /content/glorys12_med_test_1994_2003.nc \
-  --mask-path /content/drive/MyDrive/thesis/land_sea_mask.nc \
-  --stats-path /content/drive/MyDrive/thesis/normalization_stats.nc \
-  --checkpoint-path /content/drive/MyDrive/thesis/best_forecaster.pt \
+  --mask-path /content/drive/MyDrive/Thesis/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/Thesis/normalization_stats.nc \
+  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster.pt \
+  --reuse-stats \
   --device cuda \
   --batch-size 1 \
   --num-workers 2 \
@@ -76,15 +77,21 @@ python src/train.py \
   --train-model
 ```
 
+The best model is saved as `best_forecaster.pt`; the state of every completed
+epoch is saved as `best_forecaster_last.pt`. After a Colab interruption,
+repeat the same training command and add `--resume` to continue from the next
+epoch instead of restarting from zero.
+
 After model selection is complete, the reserved final year can be evaluated
 once with:
 
 ```bash
 python src/train.py \
   --data-path /content/glorys12_med_test_1994_2003.nc \
-  --mask-path /content/drive/MyDrive/thesis/land_sea_mask.nc \
-  --stats-path /content/drive/MyDrive/thesis/normalization_stats.nc \
-  --checkpoint-path /content/drive/MyDrive/thesis/best_forecaster.pt \
+  --mask-path /content/drive/MyDrive/Thesis/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/Thesis/normalization_stats.nc \
+  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster.pt \
+  --reuse-stats \
   --device cuda \
   --evaluate-test
 ```

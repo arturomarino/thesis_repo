@@ -55,6 +55,7 @@ class ForecastFitResult:
     best_validation_nll: float
     epochs_completed: int
     checkpoint_path: Path
+    last_checkpoint_path: Path
 
 
 def train_autoencoder_step(
@@ -200,8 +201,9 @@ def fit_forecaster(
     epochs: int,
     patience: int,
     checkpoint_path: Path,
+    resume_checkpoint: dict[str, object] | None = None,
 ) -> ForecastFitResult:
-    """Addestra con early stopping sulla validation Gaussian NLL."""
+    """Addestra con early stopping e ripresa da un checkpoint opzionale."""
 
     if epochs <= 0:
         raise ValueError("epochs deve essere positivo.")
@@ -209,12 +211,30 @@ def fit_forecaster(
         raise ValueError("patience deve essere positivo.")
 
     checkpoint_path = Path(checkpoint_path)
+    last_checkpoint_path = _last_checkpoint_path(checkpoint_path)
+    start_epoch = 1
     best_validation_nll = float("inf")
     best_epoch = 0
     epochs_without_improvement = 0
     history: list[dict[str, object]] = []
 
-    for epoch in range(1, epochs + 1):
+    if resume_checkpoint is not None:
+        start_epoch = int(resume_checkpoint["epoch"]) + 1
+        best_validation_nll = float(
+            resume_checkpoint.get("best_validation_nll", float("inf"))
+        )
+        best_epoch = int(resume_checkpoint.get("best_epoch", 0))
+        epochs_without_improvement = int(
+            resume_checkpoint.get("epochs_without_improvement", 0)
+        )
+        history = list(resume_checkpoint.get("history", []))
+
+    if start_epoch > epochs:
+        raise ValueError(
+            "Il checkpoint ha gia' raggiunto il numero massimo di epoche."
+        )
+
+    for epoch in range(start_epoch, epochs + 1):
         train_metrics = run_forecast_epoch(
             model=model,
             batches=train_batches,
@@ -255,9 +275,26 @@ def fit_forecaster(
                 epoch=epoch,
                 validation_metrics=validation_metrics,
                 history=history,
+                best_validation_nll=best_validation_nll,
+                best_epoch=best_epoch,
+                epochs_without_improvement=epochs_without_improvement,
+                checkpoint_kind="best",
             )
         else:
             epochs_without_improvement += 1
+
+        _save_checkpoint(
+            path=last_checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch,
+            validation_metrics=validation_metrics,
+            history=history,
+            best_validation_nll=best_validation_nll,
+            best_epoch=best_epoch,
+            epochs_without_improvement=epochs_without_improvement,
+            checkpoint_kind="last",
+        )
 
         if epochs_without_improvement >= patience:
             print(f"Early stopping dopo {epoch} epoche.")
@@ -266,8 +303,9 @@ def fit_forecaster(
     return ForecastFitResult(
         best_epoch=best_epoch,
         best_validation_nll=best_validation_nll,
-        epochs_completed=len(history),
+        epochs_completed=epoch,
         checkpoint_path=checkpoint_path,
+        last_checkpoint_path=last_checkpoint_path,
     )
 
 
@@ -299,8 +337,12 @@ def _save_checkpoint(
     epoch: int,
     validation_metrics: ForecastEpochMetrics,
     history: list[dict[str, object]],
+    best_validation_nll: float,
+    best_epoch: int,
+    epochs_without_improvement: int,
+    checkpoint_kind: str,
 ) -> None:
-    """Scrive atomicamente il checkpoint migliore."""
+    """Scrive atomicamente un checkpoint migliore o di ripresa."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
@@ -316,7 +358,19 @@ def _save_checkpoint(
             "optimizer_state_dict": optimizer.state_dict(),
             "validation_metrics": asdict(validation_metrics),
             "history": history,
+            "best_validation_nll": best_validation_nll,
+            "best_epoch": best_epoch,
+            "epochs_without_improvement": epochs_without_improvement,
+            "checkpoint_kind": checkpoint_kind,
         },
         temporary_path,
     )
     temporary_path.replace(path)
+
+
+def _last_checkpoint_path(checkpoint_path: Path) -> Path:
+    """Restituisce il percorso persistente dello stato dell'ultima epoca."""
+
+    return checkpoint_path.with_name(
+        f"{checkpoint_path.stem}_last{checkpoint_path.suffix}"
+    )

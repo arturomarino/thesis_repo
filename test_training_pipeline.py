@@ -65,6 +65,27 @@ def test_fit_saves_best_checkpoint_and_reports_metrics(
         model=TinyProbabilisticForecaster(),
         device=torch.device("cpu"),
     )
+    last_checkpoint_path = checkpoint_path.with_name("best_last.pt")
+    last_checkpoint = torch.load(
+        last_checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    resumed_model = TinyProbabilisticForecaster()
+    resumed_model.load_state_dict(last_checkpoint["model_state_dict"])
+    resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+    resumed_optimizer.load_state_dict(last_checkpoint["optimizer_state_dict"])
+    resumed_result = fit_forecaster(
+        model=resumed_model,
+        train_batches=[_batch()],
+        validation_batches=[_batch()],
+        optimizer=resumed_optimizer,
+        device=torch.device("cpu"),
+        epochs=3,
+        patience=2,
+        checkpoint_path=checkpoint_path,
+        resume_checkpoint=last_checkpoint,
+    )
     metrics = run_forecast_epoch(
         model=model,
         batches=[_batch()],
@@ -74,7 +95,9 @@ def test_fit_saves_best_checkpoint_and_reports_metrics(
     assert result.best_epoch >= 1
     assert result.epochs_completed == 2
     assert checkpoint_path.exists()
+    assert checkpoint_path.with_name("best_last.pt").exists()
     assert checkpoint["epoch"] == result.best_epoch
+    assert resumed_result.epochs_completed == 3
     assert metrics.valid_points == 2
     assert 0 <= metrics.coverage_68 <= 1
     assert 0 <= metrics.coverage_95 <= 1
