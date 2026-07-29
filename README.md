@@ -51,20 +51,23 @@ not train):
 git clone https://github.com/arturomarino/thesis_repo.git
 cd thesis_repo
 pip install -r requirements.txt
+# Copia locale: evita di calcolare le statistiche leggendo 18 GB da Drive.
+cp /content/drive/MyDrive/thesis/glorys12_med_test_1994_2003.nc /content/
 python src/train.py \
-  --data-path /content/drive/MyDrive/tesi/copernicus.nc \
-  --mask-path /content/drive/MyDrive/tesi/land_sea_mask.nc \
-  --stats-path /content/drive/MyDrive/tesi/normalization_stats.nc
+  --data-path /content/glorys12_med_test_1994_2003.nc \
+  --mask-path /content/drive/MyDrive/thesis/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/thesis/normalization_stats.nc \
+  --time-chunk 16
 ```
 
 Training starts only with the explicit `--train-model` flag:
 
 ```bash
 python src/train.py \
-  --data-path /content/drive/MyDrive/tesi/copernicus.nc \
-  --mask-path /content/drive/MyDrive/tesi/land_sea_mask.nc \
-  --stats-path /content/drive/MyDrive/tesi/normalization_stats.nc \
-  --checkpoint-path /content/drive/MyDrive/tesi/best_forecaster.pt \
+  --data-path /content/glorys12_med_test_1994_2003.nc \
+  --mask-path /content/drive/MyDrive/thesis/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/thesis/normalization_stats.nc \
+  --checkpoint-path /content/drive/MyDrive/thesis/best_forecaster.pt \
   --device cuda \
   --batch-size 1 \
   --num-workers 2 \
@@ -78,10 +81,10 @@ once with:
 
 ```bash
 python src/train.py \
-  --data-path /content/drive/MyDrive/tesi/copernicus.nc \
-  --mask-path /content/drive/MyDrive/tesi/land_sea_mask.nc \
-  --stats-path /content/drive/MyDrive/tesi/normalization_stats.nc \
-  --checkpoint-path /content/drive/MyDrive/tesi/best_forecaster.pt \
+  --data-path /content/glorys12_med_test_1994_2003.nc \
+  --mask-path /content/drive/MyDrive/thesis/land_sea_mask.nc \
+  --stats-path /content/drive/MyDrive/thesis/normalization_stats.nc \
+  --checkpoint-path /content/drive/MyDrive/thesis/best_forecaster.pt \
   --device cuda \
   --evaluate-test
 ```

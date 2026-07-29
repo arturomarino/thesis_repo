@@ -57,6 +57,12 @@ def parse_args() -> argparse.Namespace:
         help="Numero di worker PyTorch per il caricamento dati.",
     )
     parser.add_argument(
+        "--time-chunk",
+        type=int,
+        default=16,
+        help="Numero di giorni per chunk Dask durante preprocessing e statistiche.",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=100,
@@ -179,9 +185,12 @@ def main() -> None:
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
 
+    if args.time_chunk <= 0:
+        raise ValueError("time_chunk deve essere positivo.")
+
     dm = DataManager(
         args.data_path,
-        chunks={"time": 1},
+        chunks={"time": args.time_chunk},
     )
     ds = dm.load()
 
@@ -204,7 +213,8 @@ def main() -> None:
     print(f"Validation time steps: {splits.validation.sizes['time']}")
     print(f"Test time steps: {splits.test.sizes['time']}")
 
-    normalizer = Normalizer()
+    print("Calcolo delle statistiche di normalizzazione sul training set...")
+    normalizer = Normalizer(scheduler="single-threaded")
     normalizer.fit(splits.train)
     normalizer.save(args.stats_path)
     normalizer.load(args.stats_path)

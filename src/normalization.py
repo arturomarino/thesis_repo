@@ -34,9 +34,11 @@ class Normalizer:
         self,
         sample_dims: tuple[str, ...] = ("time", "latitude", "longitude"),
         eps: float = 1e-8,
+        scheduler: str = "single-threaded",
     ):
         self.sample_dims = sample_dims
         self.eps = eps
+        self.scheduler = scheduler
         self.statistics: dict[str, xr.DataArray] = {}
 
     def fit(self, dataset: xr.Dataset) -> None:
@@ -99,18 +101,36 @@ class Normalizer:
         if not self.statistics:
             raise ValueError("Statistiche non disponibili: eseguire fit().")
 
-        stats = xr.Dataset(self.statistics)
+        materialized: dict[str, xr.DataArray] = {}
+        variables = [
+            name.removesuffix("_mean")
+            for name in self.statistics
+            if name.endswith("_mean")
+        ]
 
-        if any(
-            is_dask_collection(variable.data)
-            for variable in stats.data_vars.values()
-        ):
-            stats = stats.compute()
+        # Una singola compute su tutte le variabili costruisce un grafo molto
+        # grande e puo' saturare RAM/Drive. Calcoliamo invece una variabile
+        # fisica alla volta, con scheduler a memoria controllata.
+        for variable in variables:
+            mean_name = f"{variable}_mean"
+            std_name = f"{variable}_std"
+            stats_pair = xr.Dataset(
+                {
+                    mean_name: self.statistics[mean_name],
+                    std_name: self.statistics[std_name],
+                }
+            )
+            if any(
+                is_dask_collection(item.data)
+                for item in stats_pair.data_vars.values()
+            ):
+                print(f"Calcolo statistiche: {variable}...")
+                stats_pair = stats_pair.compute(scheduler=self.scheduler)
 
-        self.statistics = {
-            variable: stats[variable]
-            for variable in stats.data_vars
-        }
+            materialized[mean_name] = stats_pair[mean_name]
+            materialized[std_name] = stats_pair[std_name]
+
+        self.statistics = materialized
 
     def save(self, path: str | Path) -> None:
         """
@@ -137,7 +157,11 @@ class Normalizer:
                 "fitted_on": "train_split_only",
             }
         )
-        stats.to_netcdf(output_path)
+        temporary_path = output_path.with_name(
+            f".{output_path.stem}.tmp{output_path.suffix}"
+        )
+        stats.to_netcdf(temporary_path)
+        temporary_path.replace(output_path)
 
     def load(self, path: str | Path) -> None:
         """Carica statistiche salvate in precedenza."""
