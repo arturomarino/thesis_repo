@@ -13,6 +13,7 @@ from training import (
     load_forecaster_checkpoint,
     run_forecast_epoch,
 )
+from visualization import plot_learning_curve
 
 
 class TinyProbabilisticForecaster(nn.Module):
@@ -101,3 +102,24 @@ def test_fit_saves_best_checkpoint_and_reports_metrics(
     assert metrics.valid_points == 2
     assert 0 <= metrics.coverage_68 <= 1
     assert 0 <= metrics.coverage_95 <= 1
+
+
+def test_plot_learning_curve_creates_png(tmp_path: Path) -> None:
+    history = [
+        {
+            "epoch": 1,
+            "train": {"gaussian_nll": 1.2},
+            "validation": {"gaussian_nll": 1.4},
+        },
+        {
+            "epoch": 2,
+            "train": {"gaussian_nll": 0.8},
+            "validation": {"gaussian_nll": 0.9},
+        },
+    ]
+    output_path = tmp_path / "learning_curve.png"
+
+    result = plot_learning_curve(history, output_path)
+
+    assert result == output_path
+    assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

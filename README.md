@@ -80,7 +80,20 @@ python src/train.py \
 The best model is saved as `best_forecaster.pt`; the state of every completed
 epoch is saved as `best_forecaster_last.pt`. After a Colab interruption,
 repeat the same training command and add `--resume` to continue from the next
-epoch instead of restarting from zero.
+epoch instead of restarting from zero. At the end of training, Matplotlib also
+saves `best_forecaster_learning_curve.png` next to the checkpoint. The graph
+compares training and validation Gaussian NLL and highlights the best epoch.
+
+The learning curve can be regenerated directly from the checkpoint history,
+without loading the NetCDF dataset:
+
+```bash
+python src/train.py \
+  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster.pt \
+  --plot-learning-curve
+```
+
+Use `--learning-curve-path /path/curve.png` to choose a different output path.
 
 After model selection is complete, the reserved final year can be evaluated
 once with:

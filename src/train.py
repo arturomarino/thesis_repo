@@ -21,6 +21,7 @@ from training import (
     run_forecast_epoch,
     train_autoencoder_step,
 )
+from visualization import plot_learning_curve
 
 
 def parse_args() -> argparse.Namespace:
@@ -110,6 +111,15 @@ def parse_args() -> argparse.Namespace:
         help="Percorso del checkpoint migliore.",
     )
     parser.add_argument(
+        "--learning-curve-path",
+        type=Path,
+        default=None,
+        help=(
+            "Percorso PNG della curva di apprendimento; per default viene "
+            "salvata accanto al checkpoint."
+        ),
+    )
+    parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
         default="auto",
@@ -140,6 +150,14 @@ def parse_args() -> argparse.Namespace:
         "--evaluate-test",
         action="store_true",
         help="Valuta sul test annuale un checkpoint gia' addestrato.",
+    )
+    parser.add_argument(
+        "--plot-learning-curve",
+        action="store_true",
+        help=(
+            "Rigenera la curva dalla history del checkpoint senza caricare "
+            "il dataset."
+        ),
     )
     parser.add_argument(
         "--smoke-test-dataset",
@@ -176,6 +194,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if args.plot_learning_curve:
+        create_learning_curve_from_checkpoint(args)
+        return
 
     if args.smoke_test_dataset:
         smoke_test_dataset()
@@ -374,6 +396,51 @@ def run_full_training(
     print(f"Validation NLL migliore: {result.best_validation_nll:.6f}")
     print(f"Checkpoint: {result.checkpoint_path}")
     print(f"Checkpoint di ripresa: {result.last_checkpoint_path}")
+    checkpoint = read_forecaster_checkpoint(
+        result.last_checkpoint_path,
+        torch.device("cpu"),
+    )
+    curve_path = plot_learning_curve(
+        checkpoint["history"],
+        resolve_learning_curve_path(args),
+    )
+    print(f"Curva di apprendimento: {curve_path}")
+
+
+def create_learning_curve_from_checkpoint(args: argparse.Namespace) -> None:
+    """Crea il grafico dalla history completa, senza aprire i dati NetCDF."""
+
+    last_checkpoint_path = args.checkpoint_path.with_name(
+        f"{args.checkpoint_path.stem}_last{args.checkpoint_path.suffix}"
+    )
+    history_checkpoint_path = (
+        last_checkpoint_path
+        if last_checkpoint_path.exists()
+        else args.checkpoint_path
+    )
+    checkpoint = read_forecaster_checkpoint(
+        history_checkpoint_path,
+        torch.device("cpu"),
+    )
+    history = checkpoint.get("history")
+    if not isinstance(history, list):
+        raise ValueError("History del training assente nel checkpoint.")
+
+    curve_path = plot_learning_curve(
+        history,
+        resolve_learning_curve_path(args),
+    )
+    print(f"Curva di apprendimento: {curve_path}")
+
+
+def resolve_learning_curve_path(args: argparse.Namespace) -> Path:
+    """Determina il percorso del PNG, accanto al checkpoint per default."""
+
+    if args.learning_curve_path is not None:
+        return args.learning_curve_path
+    return args.checkpoint_path.with_name(
+        f"{args.checkpoint_path.stem}_learning_curve.png"
+    )
 
 
 def evaluate_test_checkpoint(
