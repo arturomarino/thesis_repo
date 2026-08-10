@@ -23,6 +23,10 @@ from torch import nn
 
 from dataset import OceanForecastSample
 from losses import masked_gaussian_nll_loss, masked_mse_loss
+from visualization import (
+    plot_learning_curve_snapshot,
+    plot_learning_curve_snapshots,
+)
 
 try:
     from tqdm.auto import tqdm
@@ -228,6 +232,7 @@ def fit_forecaster(
     checkpoint_path: Path,
     resume_checkpoint: dict[str, object] | None = None,
     show_progress: bool = True,
+    learning_curve_directory: Path | None = None,
 ) -> ForecastFitResult:
     """Addestra con early stopping e ripresa da un checkpoint opzionale."""
 
@@ -254,6 +259,12 @@ def fit_forecaster(
             resume_checkpoint.get("epochs_without_improvement", 0)
         )
         history = list(resume_checkpoint.get("history", []))
+
+    if learning_curve_directory is not None and history:
+        plot_learning_curve_snapshots(
+            history,
+            learning_curve_directory,
+        )
 
     if start_epoch > epochs:
         raise ValueError(
@@ -329,6 +340,13 @@ def fit_forecaster(
             epochs_without_improvement=epochs_without_improvement,
             checkpoint_kind="last",
         )
+
+        if learning_curve_directory is not None:
+            snapshot_path = plot_learning_curve_snapshot(
+                history,
+                learning_curve_directory,
+            )
+            print(f"Curva cumulativa: {snapshot_path}")
 
         if epochs_without_improvement >= patience:
             print(f"Early stopping dopo {epoch} epoche.")

@@ -72,10 +72,23 @@ python src/train.py \
   --device cuda \
   --batch-size 1 \
   --num-workers 2 \
-  --epochs 100 \
+  --epochs 50 \
   --patience 10 \
+  --learning-curve-directory \
+    /content/drive/MyDrive/Thesis/thesis_repo/outputs/learning_curves \
   --train-model
 ```
+
+Il training esegue al massimo 50 epoche. L'early stopping lo interrompe prima
+se la validation Gaussian NLL non migliora per 10 epoche consecutive; non e'
+necessario fermare manualmente lo script.
+
+Dopo ogni epoca viene salvato anche uno snapshot cumulativo nella cartella
+`outputs/learning_curves` della repo. Per esempio,
+`learning_curve_epoch_011.png` mostra tutta la history dall'asse 0 all'epoca
+11, mentre `learning_curve_epoch_012.png` la mostra fino all'epoca 12. In caso
+di `--resume`, gli snapshot delle epoche gia' presenti nel checkpoint vengono
+rigenerati automaticamente prima di continuare il training.
 
 The best model is saved as `best_forecaster.pt`; the state of every completed
 epoch is saved as `best_forecaster_last.pt`. After a Colab interruption,
@@ -90,10 +103,35 @@ without loading the NetCDF dataset:
 ```bash
 python src/train.py \
   --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster.pt \
+  --learning-curve-directory \
+    /content/drive/MyDrive/Thesis/thesis_repo/outputs/learning_curves \
   --plot-learning-curve
 ```
 
 Use `--learning-curve-path /path/curve.png` to choose a different output path.
+
+## Temperature map
+
+La temperatura marina osservata (`thetao_cglo`) puo' essere visualizzata per
+un giorno e un livello di profondita' specifici. La mappa usa il colore per la
+temperatura e sovrappone un campione regolare di valori numerici per mantenere
+la figura leggibile.
+
+Giorno scelto, primo livello vicino alla superficie:
+
+```bash
+python src/plot_temperature_map.py \
+  --data-path /content/glorys12_med_test_1994_2003.nc \
+  --mask-path /content/land_sea_mask.nc \
+  --date 2000-08-15 \
+  --output-directory \
+    /content/drive/MyDrive/Thesis/thesis_repo/outputs/temperature_maps
+```
+
+Per scegliere un giorno casuale riproducibile, omettere `--date`. Per chiedere
+il livello disponibile piu' vicino a una profondita' specifica aggiungere, per
+esempio, `--depth 10`. `--label-step 8` mostra un valore ogni otto punti della
+griglia; valori piu' piccoli producono piu' etichette.
 
 After model selection is complete, the reserved final year can be evaluated
 once with:

@@ -123,3 +123,32 @@ def test_plot_learning_curve_creates_png(tmp_path: Path) -> None:
 
     assert result == output_path
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_fit_early_stops_after_patience_without_improvement(
+    tmp_path: Path,
+) -> None:
+    model = TinyProbabilisticForecaster()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    learning_curve_directory = tmp_path / "learning_curves"
+
+    result = fit_forecaster(
+        model=model,
+        train_batches=[_batch()],
+        validation_batches=[_batch()],
+        optimizer=optimizer,
+        device=torch.device("cpu"),
+        epochs=50,
+        patience=2,
+        checkpoint_path=tmp_path / "best.pt",
+        show_progress=False,
+        learning_curve_directory=learning_curve_directory,
+    )
+
+    assert result.best_epoch == 1
+    assert result.epochs_completed == 3
+    for epoch in range(1, 4):
+        snapshot_path = learning_curve_directory / (
+            f"learning_curve_epoch_{epoch:03d}.png"
+        )
+        assert snapshot_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

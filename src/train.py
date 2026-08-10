@@ -21,7 +21,10 @@ from training import (
     run_forecast_epoch,
     train_autoencoder_step,
 )
-from visualization import plot_learning_curve
+from visualization import (
+    plot_learning_curve,
+    plot_learning_curve_snapshots,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,8 +74,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100,
-        help="Numero massimo di epoche.",
+        default=50,
+        help="Numero massimo di epoche (early stopping attivo).",
     )
     parser.add_argument(
         "--patience",
@@ -117,6 +120,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Percorso PNG della curva di apprendimento; per default viene "
             "salvata accanto al checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--learning-curve-directory",
+        type=Path,
+        default=project_root / "outputs/learning_curves",
+        help=(
+            "Cartella degli snapshot cumulativi salvati dopo ogni epoca."
         ),
     )
     parser.add_argument(
@@ -389,6 +400,7 @@ def run_full_training(
         checkpoint_path=args.checkpoint_path,
         resume_checkpoint=resume_checkpoint,
         show_progress=not args.no_progress,
+        learning_curve_directory=args.learning_curve_directory,
     )
 
     print("Training completato.")
@@ -405,6 +417,10 @@ def run_full_training(
         resolve_learning_curve_path(args),
     )
     print(f"Curva di apprendimento: {curve_path}")
+    print(
+        "Snapshot cumulativi per epoca: "
+        f"{args.learning_curve_directory}"
+    )
 
 
 def create_learning_curve_from_checkpoint(args: argparse.Namespace) -> None:
@@ -430,7 +446,15 @@ def create_learning_curve_from_checkpoint(args: argparse.Namespace) -> None:
         history,
         resolve_learning_curve_path(args),
     )
+    snapshot_paths = plot_learning_curve_snapshots(
+        history,
+        args.learning_curve_directory,
+    )
     print(f"Curva di apprendimento: {curve_path}")
+    print(
+        f"Snapshot cumulativi rigenerati: {len(snapshot_paths)} in "
+        f"{args.learning_curve_directory}"
+    )
 
 
 def resolve_learning_curve_path(args: argparse.Namespace) -> Path:

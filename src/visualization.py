@@ -86,9 +86,49 @@ def plot_learning_curve(
     )
     axis.grid(True, alpha=0.25)
     axis.legend()
-    axis.margins(x=0.02)
+    axis.set_xlim(left=0, right=max(1, epochs[-1]))
     figure.tight_layout()
     figure.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(figure)
 
     return output_path
+
+
+def plot_learning_curve_snapshot(
+    history: Iterable[dict[str, object]],
+    output_directory: Path,
+) -> Path:
+    """Salva la curva cumulativa fino all'ultima epoca della history."""
+
+    history_entries = list(history)
+    if not history_entries:
+        raise ValueError("La history del training e' vuota.")
+
+    try:
+        epoch = int(history_entries[-1]["epoch"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Epoca non valida nella history del training.") from error
+
+    output_path = Path(output_directory) / (
+        f"learning_curve_epoch_{epoch:03d}.png"
+    )
+    return plot_learning_curve(history_entries, output_path)
+
+
+def plot_learning_curve_snapshots(
+    history: Iterable[dict[str, object]],
+    output_directory: Path,
+) -> list[Path]:
+    """Rigenera uno snapshot cumulativo per ogni epoca disponibile."""
+
+    history_entries = list(history)
+    if not history_entries:
+        raise ValueError("La history del training e' vuota.")
+
+    return [
+        plot_learning_curve_snapshot(
+            history_entries[:history_end],
+            output_directory,
+        )
+        for history_end in range(1, len(history_entries) + 1)
+    ]
