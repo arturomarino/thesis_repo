@@ -70,6 +70,11 @@ def test_applies_mask_and_writes_plot(tmp_path: Path) -> None:
         coords={
             "latitude": selected.latitude,
             "longitude": selected.longitude,
+            # Riproduce le coordinate scalari presenti nella mask reale. Il
+            # giorno e la profondita' sono intenzionalmente diversi dalla
+            # temperatura selezionata.
+            "time": np.datetime64("1999-12-31"),
+            "depth": 10.0,
         },
         name="thetao_cglo",
     )
@@ -82,6 +87,8 @@ def test_applies_mask_and_writes_plot(tmp_path: Path) -> None:
     result = plot_temperature_map(masked, output_path, label_step=2)
 
     assert np.isnan(masked.values[0, 0])
+    assert selected_date(masked) == "2000-01-01"
+    assert selected_depth(masked) == 0.5
     assert result == output_path
     assert output_path.exists()
     assert output_path.stat().st_size > 0

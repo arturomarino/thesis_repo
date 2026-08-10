@@ -146,7 +146,16 @@ def apply_land_sea_mask(
         raise FileNotFoundError(f"Mask non trovata: {mask_path}")
 
     with xr.open_dataarray(mask_path) as opened_mask:
-        mask = opened_mask.squeeze(drop=True).load()
+        # La mask Copernicus contiene anche coordinate scalari ``time`` e
+        # ``depth`` riferite al giorno con cui e' stata costruita. Non fanno
+        # parte della griglia 2D e possono essere diverse da quelle della
+        # temperatura selezionata: Xarray eliminerebbe quindi le coordinate
+        # corrette durante ``where``. Manteniamo soltanto gli indici spaziali.
+        mask = (
+            opened_mask.squeeze(drop=True)
+            .reset_coords(drop=True)
+            .load()
+        )
 
     unexpected_dimensions = set(mask.dims) - {"latitude", "longitude"}
     if unexpected_dimensions:
