@@ -53,10 +53,20 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Checkpoint del previsore, normalmente best_forecaster.pt.",
     )
-    parser.add_argument(
+    date_group = parser.add_mutually_exclusive_group(required=True)
+    date_group.add_argument(
+        "--forecast-date",
+        type=str,
+        default=None,
+        help=(
+            "Giorno che vuoi prevedere nel formato YYYY-MM-DD. Il modello "
+            "usera' automaticamente il giorno precedente come input."
+        ),
+    )
+    date_group.add_argument(
         "--input-date",
         type=str,
-        required=True,
+        default=None,
         help=(
             "Giorno fornito al modello nel formato YYYY-MM-DD. La mappa "
             "rappresenta la previsione per il giorno successivo."
@@ -126,6 +136,31 @@ def find_input_time_index(dataset: xr.Dataset, input_date: str) -> int:
             f"Intervallo disponibile: {first_day} - {last_day}."
         )
     return int(matching_indices[0])
+
+
+def resolve_forecast_dates(
+    *,
+    input_date: str | None,
+    forecast_date: str | None,
+) -> tuple[str, np.datetime64]:
+    """Restituisce il giorno di input e il giorno target scelto dall'utente."""
+
+    selected_date = forecast_date if forecast_date is not None else input_date
+    if selected_date is None:
+        raise ValueError("Specificare forecast-date oppure input-date.")
+    try:
+        selected_day = np.datetime64(selected_date, "D")
+    except ValueError as error:
+        raise ValueError("La data deve avere il formato YYYY-MM-DD.") from error
+
+    if forecast_date is not None:
+        forecast_day = selected_day
+        input_day = forecast_day - np.timedelta64(1, "D")
+    else:
+        input_day = selected_day
+        forecast_day = input_day + np.timedelta64(1, "D")
+
+    return np.datetime_as_string(input_day, unit="D"), forecast_day
 
 
 def load_land_sea_mask(mask_path: Path) -> xr.DataArray:
@@ -423,9 +458,12 @@ def main() -> None:
     mask = load_land_sea_mask(args.mask_path)
     with xr.open_dataset(args.stats_path) as opened_statistics:
         statistics = opened_statistics.load()
+    input_date, forecast_day = resolve_forecast_dates(
+        input_date=args.input_date,
+        forecast_date=args.forecast_date,
+    )
     with xr.open_dataset(args.data_path, chunks={"time": 1}) as dataset:
-        time_index = find_input_time_index(dataset, args.input_date)
-        input_day = dataset["time"].values[time_index].astype("datetime64[D]")
+        time_index = find_input_time_index(dataset, input_date)
         input_volume, valid_mask = prepare_normalized_input(
             dataset,
             statistics,
@@ -442,25 +480,25 @@ def main() -> None:
             statistics,
             valid_mask,
             dataset,
-            input_day + np.timedelta64(1, "D"),
+            forecast_day,
         )
 
     forecast_slice = select_forecast_depth(forecast, args.depth)
     output_path = build_output_path(
         args.output_directory,
-        args.input_date,
+        input_date,
         forecast_slice,
     )
     plot_temperature_forecast(
         forecast_slice,
         output_path,
-        input_date=args.input_date,
+        input_date=input_date,
         checkpoint_epoch=checkpoint_epoch,
         label_step=args.label_step,
     )
 
     print(f"Device: {device}")
-    print(f"Input osservato: {args.input_date}")
+    print(f"Input osservato: {input_date}")
     print(
         "Giorno previsto: "
         f"{format_date(forecast_slice['time'].values)}"

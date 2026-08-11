@@ -17,6 +17,7 @@ from plot_temperature_forecast import (
     denormalize_temperature_forecast,
     find_input_time_index,
     prepare_normalized_input,
+    resolve_forecast_dates,
     run_temperature_forecast,
 )
 
@@ -123,3 +124,13 @@ def test_loads_checkpoint_and_runs_forecast(tmp_path: Path) -> None:
 
     assert forecast.shape == (8, 8, 8)
     assert epoch == 12
+
+
+def test_resolves_user_selected_forecast_date() -> None:
+    input_date, forecast_day = resolve_forecast_dates(
+        input_date=None,
+        forecast_date="2000-08-15",
+    )
+
+    assert input_date == "2000-08-14"
+    assert forecast_day == np.datetime64("2000-08-15")
