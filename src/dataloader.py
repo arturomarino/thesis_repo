@@ -16,6 +16,7 @@ Non esegue:
 
 from dataclasses import dataclass
 
+import numpy as np
 from torch.utils.data import DataLoader
 
 from dataset import OceanForecastDataset, OceanForecastSample
@@ -62,6 +63,11 @@ def create_ocean_dataloaders(
     """Crea DataLoader coerenti per train, validation e test."""
 
     config = config or DataLoaderConfig()
+    _validate_temporal_separation(
+        train_dataset,
+        validation_dataset,
+        test_dataset,
+    )
 
     train_loader = _create_loader(
         train_dataset,
@@ -99,3 +105,29 @@ def _create_loader(
         pin_memory=config.pin_memory,
         drop_last=config.drop_last,
     )
+
+
+def _validate_temporal_separation(
+    train_dataset: OceanForecastDataset,
+    validation_dataset: OceanForecastDataset,
+    test_dataset: OceanForecastDataset,
+) -> None:
+    """Impedisce che lo stesso timestamp compaia in split diversi."""
+
+    named_datasets = (
+        ("train", train_dataset),
+        ("validation", validation_dataset),
+        ("test", test_dataset),
+    )
+    for left_index, (left_name, left_dataset) in enumerate(named_datasets):
+        for right_name, right_dataset in named_datasets[left_index + 1 :]:
+            overlap = np.intersect1d(
+                left_dataset.time_values,
+                right_dataset.time_values,
+            )
+            if overlap.size:
+                raise ValueError(
+                    f"Gli split {left_name} e {right_name} condividono "
+                    f"{overlap.size} timestamp; primo timestamp duplicato: "
+                    f"{overlap[0]}."
+                )

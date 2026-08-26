@@ -11,7 +11,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from training import (
     fit_forecaster,
     load_forecaster_checkpoint,
+    rmse_skill_score,
     run_forecast_epoch,
+    run_persistence_baseline,
 )
 from visualization import plot_learning_curve
 
@@ -123,6 +125,18 @@ def test_plot_learning_curve_creates_png(tmp_path: Path) -> None:
 
     assert result == output_path
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_persistence_baseline_and_skill_score() -> None:
+    metrics = run_persistence_baseline(
+        batches=[_batch()],
+        device=torch.device("cpu"),
+    )
+
+    assert metrics.rmse == 1.0
+    assert metrics.mae == 1.0
+    assert metrics.valid_points == 2
+    assert rmse_skill_score(model_rmse=0.5, persistence_rmse=1.0) == 0.75
 
 
 def test_fit_early_stops_after_patience_without_improvement(

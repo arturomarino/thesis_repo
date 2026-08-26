@@ -50,9 +50,19 @@ class ForecastEpochMetrics:
 
     gaussian_nll: float
     rmse: float
+    mae: float
     mean_standard_deviation: float
     coverage_68: float
     coverage_95: float
+    valid_points: int
+
+
+@dataclass(frozen=True)
+class PersistenceBaselineMetrics:
+    """Metriche della previsione banale ``x(t + 1) = x(t)``."""
+
+    rmse: float
+    mae: float
     valid_points: int
 
 
@@ -122,6 +132,7 @@ def run_forecast_epoch(
 
     nll_sum = 0.0
     squared_error_sum = 0.0
+    absolute_error_sum = 0.0
     standard_deviation_sum = 0.0
     coverage_68_count = 0
     coverage_95_count = 0
@@ -185,6 +196,7 @@ def run_forecast_epoch(
 
             nll_sum += float(loss.detach().item()) * valid_points
             squared_error_sum += float(valid_error.pow(2).sum().item())
+            absolute_error_sum += float(absolute_error.sum().item())
             standard_deviation_sum += float(
                 valid_standard_deviation.sum().item()
             )
@@ -212,6 +224,7 @@ def run_forecast_epoch(
     return ForecastEpochMetrics(
         gaussian_nll=nll_sum / valid_points_total,
         rmse=(squared_error_sum / valid_points_total) ** 0.5,
+        mae=absolute_error_sum / valid_points_total,
         mean_standard_deviation=(
             standard_deviation_sum / valid_points_total
         ),
@@ -219,6 +232,96 @@ def run_forecast_epoch(
         coverage_95=coverage_95_count / valid_points_total,
         valid_points=valid_points_total,
     )
+
+
+def run_persistence_baseline(
+    batches: Iterable[OceanForecastSample],
+    device: torch.device,
+    progress_label: str | None = None,
+) -> PersistenceBaselineMetrics:
+    """Valuta la baseline che usa lo stato odierno come previsione di domani.
+
+    Il calcolo usa gli stessi tensori normalizzati e la stessa target mask
+    impiegati dal modello, in modo che RMSE e MAE siano confrontabili.
+    """
+
+    squared_error_sum = 0.0
+    absolute_error_sum = 0.0
+    valid_points_total = 0
+
+    iterable = batches
+    progress_bar = None
+    if progress_label is not None and tqdm is not None:
+        progress_bar = tqdm(
+            batches,
+            desc=progress_label,
+            total=len(batches) if hasattr(batches, "__len__") else None,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        iterable = progress_bar
+
+    with torch.no_grad():
+        for batch in iterable:
+            prediction = batch["input"]["volume"].to(
+                device,
+                non_blocking=True,
+            )
+            target = batch["target"]["volume"].to(
+                device,
+                non_blocking=True,
+            )
+            valid_mask = batch["target"]["volume_mask"].to(
+                device,
+                non_blocking=True,
+                dtype=torch.bool,
+            )
+
+            if prediction.shape != target.shape:
+                raise ValueError(
+                    "Input e target della persistence devono avere la "
+                    f"stessa forma: {tuple(prediction.shape)} != "
+                    f"{tuple(target.shape)}"
+                )
+            if valid_mask.shape != target.shape:
+                raise ValueError(
+                    "Target mask e target della persistence devono avere "
+                    "la stessa forma."
+                )
+
+            valid_points = int(valid_mask.sum().item())
+            if valid_points == 0:
+                continue
+
+            valid_error = (target - prediction)[valid_mask]
+            squared_error_sum += float(valid_error.pow(2).sum().item())
+            absolute_error_sum += float(valid_error.abs().sum().item())
+            valid_points_total += valid_points
+            if progress_bar is not None:
+                progress_bar.set_postfix(
+                    rmse=(
+                        f"{(squared_error_sum / valid_points_total) ** 0.5:.4f}"
+                    ),
+                )
+
+    if valid_points_total == 0:
+        raise ValueError("La baseline non contiene punti oceanici validi.")
+
+    return PersistenceBaselineMetrics(
+        rmse=(squared_error_sum / valid_points_total) ** 0.5,
+        mae=absolute_error_sum / valid_points_total,
+        valid_points=valid_points_total,
+    )
+
+
+def rmse_skill_score(model_rmse: float, persistence_rmse: float) -> float:
+    """Restituisce ``1 - MSE_model / MSE_persistence``."""
+
+    if model_rmse < 0:
+        raise ValueError("model_rmse non puo' essere negativo.")
+    if persistence_rmse <= 0:
+        raise ValueError("persistence_rmse deve essere positivo.")
+    return 1.0 - (model_rmse / persistence_rmse) ** 2
 
 
 def fit_forecaster(

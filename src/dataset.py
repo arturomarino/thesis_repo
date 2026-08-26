@@ -336,6 +336,13 @@ class OceanForecastDataset(Dataset[OceanForecastSample]):
     def volume_shape(self) -> tuple[int, int, int, int]:
         return self._states.volume_shape
 
+    @property
+    def time_values(self) -> np.ndarray:
+        """Restituisce i timestamp usati per costruire le coppie previsionali."""
+
+        time_dim = self._states.config.time_dim
+        return np.asarray(self._states.dataset[time_dim].values)
+
     def _normalize_index(self, index: int) -> int:
         if not isinstance(index, int) or isinstance(index, bool):
             raise TypeError("L'indice del campione deve essere un intero.")

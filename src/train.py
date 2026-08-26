@@ -18,7 +18,9 @@ from split import TemporalSplitter
 from training import (
     fit_forecaster,
     read_forecaster_checkpoint,
+    rmse_skill_score,
     run_forecast_epoch,
+    run_persistence_baseline,
     train_autoencoder_step,
 )
 from visualization import (
@@ -158,9 +160,18 @@ def parse_args() -> argparse.Namespace:
         help="Disattiva le barre di avanzamento batch per batch.",
     )
     parser.add_argument(
+        "--evaluate-validation",
+        action="store_true",
+        help=(
+            "Confronta checkpoint e persistence baseline sulla validation."
+        ),
+    )
+    parser.add_argument(
         "--evaluate-test",
         action="store_true",
-        help="Valuta sul test annuale un checkpoint gia' addestrato.",
+        help=(
+            "Confronta checkpoint e persistence baseline sul test annuale."
+        ),
     )
     parser.add_argument(
         "--plot-learning-curve",
@@ -317,8 +328,21 @@ def main() -> None:
     if args.train_model:
         run_full_training(args, loaders.train, loaders.validation, device)
 
+    if args.evaluate_validation:
+        evaluate_checkpoint_against_persistence(
+            args,
+            loaders.validation,
+            device,
+            split_label="Validation",
+        )
+
     if args.evaluate_test:
-        evaluate_test_checkpoint(args, loaders.test, device)
+        evaluate_checkpoint_against_persistence(
+            args,
+            loaders.test,
+            device,
+            split_label="Test",
+        )
 
 
 def resolve_device(requested_device: str) -> torch.device:
@@ -467,12 +491,14 @@ def resolve_learning_curve_path(args: argparse.Namespace) -> Path:
     )
 
 
-def evaluate_test_checkpoint(
+def evaluate_checkpoint_against_persistence(
     args: argparse.Namespace,
-    test_loader,
+    data_loader,
     device: torch.device,
+    *,
+    split_label: str,
 ) -> None:
-    """Valuta il test set solo su richiesta esplicita."""
+    """Confronta il checkpoint con la persistence sullo stesso split."""
 
     checkpoint = read_forecaster_checkpoint(args.checkpoint_path, device)
     saved_config = checkpoint.get("model_config")
@@ -485,17 +511,42 @@ def evaluate_test_checkpoint(
     model.load_state_dict(checkpoint["model_state_dict"])
     metrics = run_forecast_epoch(
         model=model,
-        batches=test_loader,
+        batches=data_loader,
         device=device,
+        progress_label=(
+            f"{split_label} modello" if not args.no_progress else None
+        ),
     )
+    persistence = run_persistence_baseline(
+        batches=data_loader,
+        device=device,
+        progress_label=(
+            f"{split_label} persistence" if not args.no_progress else None
+        ),
+    )
+    skill = rmse_skill_score(metrics.rmse, persistence.rmse)
 
     print(f"Checkpoint epoca: {checkpoint['epoch']}")
-    print(f"Test Gaussian NLL: {metrics.gaussian_nll:.6f}")
-    print(f"Test RMSE: {metrics.rmse:.6f}")
+    print(f"{split_label} Gaussian NLL modello: {metrics.gaussian_nll:.6f}")
+    print(f"{split_label} RMSE modello (normalizzato): {metrics.rmse:.6f}")
+    print(f"{split_label} MAE modello (normalizzato): {metrics.mae:.6f}")
     print(
-        "Test coverage 68/95: "
+        f"{split_label} sigma media prevista (normalizzata): "
+        f"{metrics.mean_standard_deviation:.6f}"
+    )
+    print(
+        f"{split_label} coverage 68/95: "
         f"{metrics.coverage_68:.3f}/{metrics.coverage_95:.3f}"
     )
+    print(
+        f"{split_label} RMSE persistence (normalizzato): "
+        f"{persistence.rmse:.6f}"
+    )
+    print(
+        f"{split_label} MAE persistence (normalizzato): "
+        f"{persistence.mae:.6f}"
+    )
+    print(f"{split_label} RMSE skill vs persistence: {skill:.6f}")
 
 
 def smoke_test_dataset() -> None:

@@ -134,7 +134,7 @@ esempio, `--depth 10`. `--label-step 8` mostra un valore ogni otto punti della
 griglia; valori piu' piccoli producono piu' etichette.
 
 After model selection is complete, the reserved final year can be evaluated
-once with:
+once against both the trained checkpoint and the persistence baseline with:
 
 ```bash
 python src/train.py \
@@ -146,6 +146,12 @@ python src/train.py \
   --device cuda \
   --evaluate-test
 ```
+
+Before freezing the model, the same comparison can be run safely on the
+validation year by replacing `--evaluate-test` with
+`--evaluate-validation`. The reported RMSE skill score is
+`1 - MSE_model / MSE_persistence`: positive values mean that the neural model
+outperforms the forecast that simply copies the previous day.
 
 Quick checks:
 
