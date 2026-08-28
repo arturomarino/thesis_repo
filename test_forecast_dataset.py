@@ -89,3 +89,44 @@ def test_dataloaders_reject_overlapping_temporal_splits() -> None:
 
     with pytest.raises(ValueError, match="train e validation condividono"):
         create_ocean_dataloaders(train, validation, test)
+
+
+def test_forecast_dataset_stacks_multiple_context_days() -> None:
+    times = np.arange(
+        np.datetime64("2024-01-01"),
+        np.datetime64("2024-01-06"),
+    )
+    volume = np.arange(5, dtype=np.float32).reshape(5, 1, 1, 1)
+    surface = np.zeros((5, 1, 1), dtype=np.float32)
+    dataset = xr.Dataset(
+        {
+            variable: (
+                ("time", "depth", "latitude", "longitude"),
+                volume.copy(),
+            )
+            for variable in OceanStateDataset.DEFAULT_VOLUME_VARIABLES
+        }
+        | {
+            OceanStateDataset.DEFAULT_SURFACE_VARIABLE: (
+                ("time", "latitude", "longitude"),
+                surface,
+            )
+        },
+        coords={
+            "time": times,
+            "depth": [0],
+            "latitude": [0],
+            "longitude": [0],
+        },
+    )
+
+    forecasts = OceanForecastDataset(dataset, context_steps=3)
+    sample = forecasts[0]
+
+    assert len(forecasts) == 2
+    assert sample["input"]["volume"].shape == (12, 1, 1, 1)
+    assert sample["input_time_index"] == 2
+    assert sample["target_time_index"] == 3
+    assert sample["input"]["volume"][0, 0, 0, 0] == 0
+    assert sample["input"]["volume"][4, 0, 0, 0] == 1
+    assert sample["input"]["volume"][8, 0, 0, 0] == 2

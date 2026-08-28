@@ -17,6 +17,7 @@ from plot_temperature_forecast import (
     denormalize_temperature_forecast,
     find_input_time_index,
     prepare_normalized_input,
+    read_forecast_context_steps,
     resolve_forecast_dates,
     run_temperature_forecast,
 )
@@ -124,6 +125,44 @@ def test_loads_checkpoint_and_runs_forecast(tmp_path: Path) -> None:
 
     assert forecast.shape == (8, 8, 8)
     assert epoch == 12
+
+
+def test_prepares_multiday_context_and_reads_it_from_checkpoint(
+    tmp_path: Path,
+) -> None:
+    dataset = make_dataset()
+    statistics = make_statistics()
+    mask = xr.DataArray(
+        np.ones((8, 8), dtype=bool),
+        dims=("latitude", "longitude"),
+        coords={
+            "latitude": dataset.latitude,
+            "longitude": dataset.longitude,
+        },
+    )
+    volume, _ = prepare_normalized_input(
+        dataset,
+        statistics,
+        mask,
+        time_index=1,
+        context_steps=2,
+    )
+    checkpoint_path = tmp_path / "context.pt"
+    torch.save(
+        {
+            "model_config": {
+                "input_channels": 12,
+                "output_channels": 4,
+                "base_channels": 2,
+                "latent_channels": 4,
+                "normalization": "none",
+            }
+        },
+        checkpoint_path,
+    )
+
+    assert volume.shape == (8, 8, 8, 8)
+    assert read_forecast_context_steps(checkpoint_path) == 3
 
 
 def test_resolves_user_selected_forecast_date() -> None:

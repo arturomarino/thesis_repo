@@ -49,6 +49,7 @@ class ForecastEpochMetrics:
     """Metriche aggregate, pesate per il numero di punti oceanici validi."""
 
     gaussian_nll: float
+    objective: float
     rmse: float
     mae: float
     mean_standard_deviation: float
@@ -98,6 +99,8 @@ class ForecastFitResult:
 
     best_epoch: int
     best_validation_nll: float
+    best_validation_rmse: float
+    validation_persistence_rmse: float
     epochs_completed: int
     checkpoint_path: Path
     last_checkpoint_path: Path
@@ -146,6 +149,8 @@ def run_forecast_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
     progress_label: str | None = None,
+    mean_mse_weight: float = 0.0,
+    gradient_clip_norm: float | None = None,
 ) -> ForecastEpochMetrics:
     """
     Esegue un'epoca.
@@ -154,9 +159,12 @@ def run_forecast_epoch(
     """
 
     is_training = optimizer is not None
+    if mean_mse_weight < 0:
+        raise ValueError("mean_mse_weight non puo' essere negativo.")
     model.train(is_training)
 
     nll_sum = 0.0
+    objective_sum = 0.0
     squared_error_sum = 0.0
     absolute_error_sum = 0.0
     standard_deviation_sum = 0.0
@@ -197,15 +205,26 @@ def run_forecast_epoch(
             output = model(input_volume)
             mean = output["mean"]
             log_variance = output["log_variance"]
-            loss = masked_gaussian_nll_loss(
+            nll = masked_gaussian_nll_loss(
                 mean=mean,
                 log_variance=log_variance,
                 target=target_volume,
                 mask=target_mask,
             )
+            mean_mse = masked_mse_loss(mean, target_volume, target_mask)
+            objective = nll + mean_mse_weight * mean_mse
 
             if is_training:
-                loss.backward()
+                objective.backward()
+                if gradient_clip_norm is not None:
+                    if gradient_clip_norm <= 0:
+                        raise ValueError(
+                            "gradient_clip_norm deve essere positivo."
+                        )
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        max_norm=gradient_clip_norm,
+                    )
                 optimizer.step()
 
         with torch.no_grad():
@@ -220,7 +239,8 @@ def run_forecast_epoch(
             )
             absolute_error = valid_error.abs()
 
-            nll_sum += float(loss.detach().item()) * valid_points
+            nll_sum += float(nll.detach().item()) * valid_points
+            objective_sum += float(objective.detach().item()) * valid_points
             squared_error_sum += float(valid_error.pow(2).sum().item())
             absolute_error_sum += float(absolute_error.sum().item())
             standard_deviation_sum += float(
@@ -249,6 +269,7 @@ def run_forecast_epoch(
 
     return ForecastEpochMetrics(
         gaussian_nll=nll_sum / valid_points_total,
+        objective=objective_sum / valid_points_total,
         rmse=(squared_error_sum / valid_points_total) ** 0.5,
         mae=absolute_error_sum / valid_points_total,
         mean_standard_deviation=(
@@ -289,7 +310,7 @@ def run_persistence_baseline(
 
     with torch.no_grad():
         for batch in iterable:
-            prediction = batch["input"]["volume"].to(
+            input_volume = batch["input"]["volume"].to(
                 device,
                 non_blocking=True,
             )
@@ -303,12 +324,16 @@ def run_persistence_baseline(
                 dtype=torch.bool,
             )
 
-            if prediction.shape != target.shape:
+            if input_volume.ndim != target.ndim:
                 raise ValueError(
-                    "Input e target della persistence devono avere la "
-                    f"stessa forma: {tuple(prediction.shape)} != "
-                    f"{tuple(target.shape)}"
+                    "Input e target della persistence devono avere lo "
+                    "stesso numero di dimensioni."
                 )
+            if input_volume.shape[1] < target.shape[1]:
+                raise ValueError("L'input non contiene l'ultimo stato completo.")
+            prediction = input_volume[:, -target.shape[1] :]
+            if prediction.shape != target.shape:
+                raise ValueError("Forma dell'ultimo stato di input inattesa.")
             if valid_mask.shape != target.shape:
                 raise ValueError(
                     "Target mask e target della persistence devono avere "
@@ -419,8 +444,8 @@ def run_temperature_evaluation(
             )
             if input_volume.ndim != 5 or input_volume.shape[1] < 1:
                 raise ValueError("Forma del volume di input non valida.")
-            if target_volume.shape != input_volume.shape:
-                raise ValueError("Input e target devono avere la stessa forma.")
+            if input_volume.shape[1] < target_volume.shape[1]:
+                raise ValueError("L'input non contiene l'ultimo stato completo.")
             if target_mask.shape != target_volume.shape:
                 raise ValueError("Target mask e target devono avere la stessa forma.")
             if target_volume.shape[2] != temperature_std.shape[1]:
@@ -439,8 +464,9 @@ def run_temperature_evaluation(
             model_error_c = (
                 mean[:, 0] - target_temperature
             ) * temperature_std
+            latest_input = input_volume[:, -target_volume.shape[1] :]
             persistence_error_c = (
-                input_volume[:, 0] - target_temperature
+                latest_input[:, 0] - target_temperature
             ) * temperature_std
             model_standard_deviation_c = torch.exp(
                 0.5 * log_variance[:, 0]
@@ -590,6 +616,9 @@ def fit_forecaster(
     resume_checkpoint: dict[str, object] | None = None,
     show_progress: bool = True,
     learning_curve_directory: Path | None = None,
+    mean_mse_weight: float = 1.0,
+    training_config: dict[str, object] | None = None,
+    gradient_clip_norm: float | None = 1.0,
 ) -> ForecastFitResult:
     """Addestra con early stopping e ripresa da un checkpoint opzionale."""
 
@@ -602,6 +631,7 @@ def fit_forecaster(
     last_checkpoint_path = _last_checkpoint_path(checkpoint_path)
     start_epoch = 1
     best_validation_nll = float("inf")
+    best_validation_rmse = float("inf")
     best_epoch = 0
     epochs_without_improvement = 0
     history: list[dict[str, object]] = []
@@ -610,6 +640,9 @@ def fit_forecaster(
         start_epoch = int(resume_checkpoint["epoch"]) + 1
         best_validation_nll = float(
             resume_checkpoint.get("best_validation_nll", float("inf"))
+        )
+        best_validation_rmse = float(
+            resume_checkpoint.get("best_validation_rmse", float("inf"))
         )
         best_epoch = int(resume_checkpoint.get("best_epoch", 0))
         epochs_without_improvement = int(
@@ -628,8 +661,16 @@ def fit_forecaster(
             "Il checkpoint ha gia' raggiunto il numero massimo di epoche."
         )
 
+    persistence_metrics = run_persistence_baseline(
+        batches=validation_batches,
+        device=device,
+        progress_label=(
+            "Validation persistence baseline" if show_progress else None
+        ),
+    )
+
     for epoch in range(start_epoch, epochs + 1):
-        train_metrics = run_forecast_epoch(
+        optimization_metrics = run_forecast_epoch(
             model=model,
             batches=train_batches,
             device=device,
@@ -637,6 +678,18 @@ def fit_forecaster(
             progress_label=(
                 f"Train epoch {epoch}/{epochs}" if show_progress else None
             ),
+            mean_mse_weight=mean_mse_weight,
+            gradient_clip_norm=gradient_clip_norm,
+        )
+        # Ricalcolo a pesi fissi: rende train e validation confrontabili.
+        train_metrics = run_forecast_epoch(
+            model=model,
+            batches=train_batches,
+            device=device,
+            progress_label=(
+                f"Train eval {epoch}/{epochs}" if show_progress else None
+            ),
+            mean_mse_weight=mean_mse_weight,
         )
         validation_metrics = run_forecast_epoch(
             model=model,
@@ -647,27 +700,42 @@ def fit_forecaster(
                 if show_progress
                 else None
             ),
+            mean_mse_weight=mean_mse_weight,
+        )
+        validation_skill = rmse_skill_score(
+            validation_metrics.rmse,
+            persistence_metrics.rmse,
         )
         history.append(
             {
                 "epoch": epoch,
                 "train": asdict(train_metrics),
                 "validation": asdict(validation_metrics),
+                "validation_persistence": asdict(persistence_metrics),
+                "validation_rmse_skill": validation_skill,
             }
         )
 
         print(
             f"Epoch {epoch:03d} | "
+            f"optimization objective {optimization_metrics.objective:.6f} | "
             f"train NLL {train_metrics.gaussian_nll:.6f} | "
+            f"train RMSE {train_metrics.rmse:.6f} | "
             f"val NLL {validation_metrics.gaussian_nll:.6f} | "
             f"val RMSE {validation_metrics.rmse:.6f} | "
+            f"persistence RMSE {persistence_metrics.rmse:.6f} | "
+            f"skill {validation_skill:.4f} | "
             f"coverage 68/95 "
             f"{validation_metrics.coverage_68:.3f}/"
             f"{validation_metrics.coverage_95:.3f}"
         )
 
-        if validation_metrics.gaussian_nll < best_validation_nll:
-            best_validation_nll = validation_metrics.gaussian_nll
+        best_validation_nll = min(
+            best_validation_nll,
+            validation_metrics.gaussian_nll,
+        )
+        if validation_metrics.rmse < best_validation_rmse:
+            best_validation_rmse = validation_metrics.rmse
             best_epoch = epoch
             epochs_without_improvement = 0
             _save_checkpoint(
@@ -678,9 +746,11 @@ def fit_forecaster(
                 validation_metrics=validation_metrics,
                 history=history,
                 best_validation_nll=best_validation_nll,
+                best_validation_rmse=best_validation_rmse,
                 best_epoch=best_epoch,
                 epochs_without_improvement=epochs_without_improvement,
                 checkpoint_kind="best",
+                training_config=training_config,
             )
         else:
             epochs_without_improvement += 1
@@ -693,9 +763,11 @@ def fit_forecaster(
             validation_metrics=validation_metrics,
             history=history,
             best_validation_nll=best_validation_nll,
+            best_validation_rmse=best_validation_rmse,
             best_epoch=best_epoch,
             epochs_without_improvement=epochs_without_improvement,
             checkpoint_kind="last",
+            training_config=training_config,
         )
 
         if learning_curve_directory is not None:
@@ -712,6 +784,8 @@ def fit_forecaster(
     return ForecastFitResult(
         best_epoch=best_epoch,
         best_validation_nll=best_validation_nll,
+        best_validation_rmse=best_validation_rmse,
+        validation_persistence_rmse=persistence_metrics.rmse,
         epochs_completed=epoch,
         checkpoint_path=checkpoint_path,
         last_checkpoint_path=last_checkpoint_path,
@@ -747,9 +821,11 @@ def _save_checkpoint(
     validation_metrics: ForecastEpochMetrics,
     history: list[dict[str, object]],
     best_validation_nll: float,
+    best_validation_rmse: float,
     best_epoch: int,
     epochs_without_improvement: int,
     checkpoint_kind: str,
+    training_config: dict[str, object] | None,
 ) -> None:
     """Scrive atomicamente un checkpoint migliore o di ripresa."""
 
@@ -768,9 +844,11 @@ def _save_checkpoint(
             "validation_metrics": asdict(validation_metrics),
             "history": history,
             "best_validation_nll": best_validation_nll,
+            "best_validation_rmse": best_validation_rmse,
             "best_epoch": best_epoch,
             "epochs_without_improvement": epochs_without_improvement,
             "checkpoint_kind": checkpoint_kind,
+            "training_config": dict(training_config or {}),
         },
         temporary_path,
     )

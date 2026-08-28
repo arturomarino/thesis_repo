@@ -111,6 +111,33 @@ def parse_args() -> argparse.Namespace:
         help="Canali del latent space.",
     )
     parser.add_argument(
+        "--context-steps",
+        type=int,
+        default=3,
+        help="Numero di giorni consecutivi forniti al modello. Default: 3.",
+    )
+    parser.add_argument(
+        "--internal-normalization",
+        choices=("none", "instance"),
+        default="none",
+        help=(
+            "Normalizzazione nei blocchi U-Net; none preserva i livelli "
+            "assoluti dei campi."
+        ),
+    )
+    parser.add_argument(
+        "--mean-mse-weight",
+        type=float,
+        default=1.0,
+        help="Peso MSE aggiunto alla Gaussian NLL. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--gradient-clip-norm",
+        type=float,
+        default=1.0,
+        help="Norma massima dei gradienti. Default: 1.0.",
+    )
+    parser.add_argument(
         "--checkpoint-path",
         type=Path,
         default=project_root / "checkpoints/best_forecaster.pt",
@@ -258,6 +285,37 @@ def main() -> None:
         smoke_test_training()
         return
 
+    evaluation_requested = any(
+        (
+            args.evaluate_validation,
+            args.evaluate_test,
+            args.evaluate_temperature_validation,
+            args.evaluate_temperature_test,
+        )
+    )
+    if evaluation_requested and not args.train_model:
+        checkpoint = read_forecaster_checkpoint(
+            args.checkpoint_path,
+            torch.device("cpu"),
+        )
+        model_config = checkpoint.get("model_config")
+        if not isinstance(model_config, dict):
+            raise ValueError(
+                "Configurazione del modello assente nel checkpoint."
+            )
+        input_channels = int(model_config.get("input_channels", 0))
+        if input_channels <= 0 or input_channels % 4 != 0:
+            raise ValueError("Canali di input del checkpoint non validi.")
+        args.context_steps = input_channels // 4
+        args.internal_normalization = str(
+            model_config.get("normalization", "instance")
+        )
+        print(
+            "Configurazione di valutazione letta dal checkpoint: "
+            f"context_steps={args.context_steps}, "
+            f"normalization={args.internal_normalization}."
+        )
+
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
 
@@ -315,9 +373,24 @@ def main() -> None:
     print(f"Validation normalizzato: {list(normalized_validation.data_vars)}")
     print(f"Test normalizzato: {list(normalized_test.data_vars)}")
 
-    train_dataset = OceanForecastDataset(normalized_train)
-    validation_dataset = OceanForecastDataset(normalized_validation)
-    test_dataset = OceanForecastDataset(normalized_test)
+    if args.context_steps <= 0:
+        raise ValueError("context-steps deve essere positivo.")
+    if args.mean_mse_weight < 0:
+        raise ValueError("mean-mse-weight non puo' essere negativo.")
+    if args.gradient_clip_norm <= 0:
+        raise ValueError("gradient-clip-norm deve essere positivo.")
+    train_dataset = OceanForecastDataset(
+        normalized_train,
+        context_steps=args.context_steps,
+    )
+    validation_dataset = OceanForecastDataset(
+        normalized_validation,
+        context_steps=args.context_steps,
+    )
+    test_dataset = OceanForecastDataset(
+        normalized_test,
+        context_steps=args.context_steps,
+    )
     loaders = create_ocean_dataloaders(
         train_dataset,
         validation_dataset,
@@ -334,13 +407,14 @@ def main() -> None:
     print(f"Coppie validation: {len(validation_dataset)}")
     print(f"Coppie test: {len(test_dataset)}")
     print(f"Forma volume: {train_dataset.volume_shape}")
+    print(f"Giorni di contesto: {args.context_steps}")
     print("DataLoader configurati.")
     print(f"Batch size train: {loaders.train.batch_size}")
     print(f"Num workers train: {loaders.train.num_workers}")
     print(f"Device selezionato: {device}")
 
     if args.first_real_training_step:
-        run_first_real_training_step(loaders.train)
+        run_first_real_training_step(loaders.train, args, device)
 
     if args.train_model:
         run_full_training(args, loaders.train, loaders.validation, device)
@@ -404,10 +478,11 @@ def build_forecaster(args: argparse.Namespace, device: torch.device):
 
     return VolumeUNetAutoencoder(
         VolumeAutoencoderConfig(
-            input_channels=4,
+            input_channels=4 * args.context_steps,
             output_channels=4,
             base_channels=args.base_channels,
             latent_channels=args.latent_channels,
+            normalization=args.internal_normalization,
         )
     ).to(device)
 
@@ -437,14 +512,27 @@ def run_full_training(
             device,
         )
         saved_config = resume_checkpoint.get("model_config")
-        if saved_config != {
-            "input_channels": 4,
+        expected_config = {
+            "input_channels": 4 * args.context_steps,
             "output_channels": 4,
             "base_channels": args.base_channels,
             "latent_channels": args.latent_channels,
-        }:
+            "normalization": args.internal_normalization,
+        }
+        if saved_config != expected_config:
             raise ValueError(
                 "La configurazione richiesta non coincide con il checkpoint."
+            )
+        saved_training_config = resume_checkpoint.get("training_config", {})
+        if not isinstance(saved_training_config, dict) or (
+            saved_training_config.get("context_steps") != args.context_steps
+            or saved_training_config.get("mean_mse_weight")
+            != args.mean_mse_weight
+            or saved_training_config.get("gradient_clip_norm")
+            != args.gradient_clip_norm
+        ):
+            raise ValueError(
+                "Contesto o peso MSE non coincidono con il checkpoint."
             )
         model.load_state_dict(resume_checkpoint["model_state_dict"])
         optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
@@ -462,11 +550,35 @@ def run_full_training(
         resume_checkpoint=resume_checkpoint,
         show_progress=not args.no_progress,
         learning_curve_directory=args.learning_curve_directory,
+        mean_mse_weight=args.mean_mse_weight,
+        gradient_clip_norm=args.gradient_clip_norm,
+        training_config={
+            "context_steps": args.context_steps,
+            "mean_mse_weight": args.mean_mse_weight,
+            "gradient_clip_norm": args.gradient_clip_norm,
+            "selection_metric": "validation_rmse",
+            "post_epoch_train_evaluation": True,
+        },
     )
 
     print("Training completato.")
     print(f"Epoca migliore: {result.best_epoch}")
     print(f"Validation NLL migliore: {result.best_validation_nll:.6f}")
+    print(f"Validation RMSE migliore: {result.best_validation_rmse:.6f}")
+    print(
+        "Validation persistence RMSE: "
+        f"{result.validation_persistence_rmse:.6f}"
+    )
+    final_skill = rmse_skill_score(
+        result.best_validation_rmse,
+        result.validation_persistence_rmse,
+    )
+    print(f"Migliore validation skill vs persistence: {final_skill:.6f}")
+    if final_skill <= 0:
+        print(
+            "ATTENZIONE: il modello non ha ancora superato la persistence "
+            "sulla validation. Non eseguire il test finale."
+        )
     print(f"Checkpoint: {result.checkpoint_path}")
     print(f"Checkpoint di ripresa: {result.last_checkpoint_path}")
     checkpoint = read_forecaster_checkpoint(
@@ -977,19 +1089,15 @@ def smoke_test_training() -> None:
     print(f"Latent space: {metrics.latent_shape}")
 
 
-def run_first_real_training_step(train_loader) -> None:
+def run_first_real_training_step(
+    train_loader,
+    args: argparse.Namespace,
+    device: torch.device,
+) -> None:
     """Esegue un solo update sul primo batch reale."""
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = VolumeUNetAutoencoder(
-        VolumeAutoencoderConfig(
-            input_channels=4,
-            output_channels=4,
-            base_channels=4,
-            latent_channels=16,
-        )
-    ).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    model = build_forecaster(args, device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     batch = next(iter(train_loader))
     metrics = train_autoencoder_step(

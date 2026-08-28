@@ -184,8 +184,48 @@ def prepare_normalized_input(
     statistics: xr.Dataset,
     mask: xr.DataArray,
     time_index: int,
+    context_steps: int = 1,
 ) -> tuple[torch.Tensor, np.ndarray]:
-    """Materializza soltanto lo stato t richiesto, con forma [4, D, H, W]."""
+    """Materializza gli ultimi stati e concatena i canali temporali."""
+
+    if context_steps <= 0:
+        raise ValueError("context_steps deve essere positivo.")
+    first_index = time_index - context_steps + 1
+    if first_index < 0:
+        raise ValueError(
+            "Non ci sono abbastanza giorni precedenti per il contesto "
+            f"richiesto ({context_steps})."
+        )
+    context_times = dataset["time"].isel(
+        time=slice(first_index, time_index + 1)
+    ).values.astype("datetime64[D]")
+    if context_times.size > 1 and not np.all(
+        np.diff(context_times) == np.timedelta64(1, "D")
+    ):
+        raise ValueError("I giorni di contesto non sono consecutivi.")
+
+    states: list[torch.Tensor] = []
+    valid_mask: np.ndarray | None = None
+    for context_index in range(first_index, time_index + 1):
+        state, valid_mask = _prepare_normalized_state(
+            dataset,
+            statistics,
+            mask,
+            context_index,
+        )
+        states.append(state)
+    if valid_mask is None:
+        raise RuntimeError("Contesto della temperatura non costruito.")
+    return torch.cat(states, dim=0), valid_mask
+
+
+def _prepare_normalized_state(
+    dataset: xr.Dataset,
+    statistics: xr.Dataset,
+    mask: xr.DataArray,
+    time_index: int,
+) -> tuple[torch.Tensor, np.ndarray]:
+    """Materializza un singolo stato con forma [4, D, H, W]."""
 
     missing_variables = set(VOLUME_VARIABLES) - set(dataset.data_vars)
     if missing_variables:
@@ -240,6 +280,23 @@ def prepare_normalized_input(
         torch.from_numpy(np.ascontiguousarray(values)),
         temperature_valid_mask,
     )
+
+
+def read_forecast_context_steps(checkpoint_path: Path) -> int:
+    """Ricava dal checkpoint quanti giorni di input richiede il modello."""
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    model_config = checkpoint.get("model_config")
+    if not isinstance(model_config, dict):
+        raise ValueError("Configurazione del modello assente nel checkpoint.")
+    input_channels = int(model_config.get("input_channels", 0))
+    if input_channels <= 0 or input_channels % len(VOLUME_VARIABLES) != 0:
+        raise ValueError("Numero di canali di input non compatibile.")
+    return input_channels // len(VOLUME_VARIABLES)
 
 
 def run_temperature_forecast(
@@ -462,6 +519,7 @@ def main() -> None:
         input_date=args.input_date,
         forecast_date=args.forecast_date,
     )
+    context_steps = read_forecast_context_steps(args.checkpoint_path)
     with xr.open_dataset(args.data_path, chunks={"time": 1}) as dataset:
         time_index = find_input_time_index(dataset, input_date)
         input_volume, valid_mask = prepare_normalized_input(
@@ -469,6 +527,7 @@ def main() -> None:
             statistics,
             mask,
             time_index,
+            context_steps=context_steps,
         )
         normalized_forecast, checkpoint_epoch = run_temperature_forecast(
             args.checkpoint_path,
@@ -499,6 +558,7 @@ def main() -> None:
 
     print(f"Device: {device}")
     print(f"Input osservato: {input_date}")
+    print(f"Giorni di contesto: {context_steps}")
     print(
         "Giorno previsto: "
         f"{format_date(forecast_slice['time'].values)}"

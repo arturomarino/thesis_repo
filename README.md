@@ -11,7 +11,7 @@ DataManager
 -> Preprocessing
 -> Temporal split
 -> Normalization
--> Forecast pairs: volume(t) -> volume(t+1)
+-> Temporal windows: [volume(t-2), volume(t-1), volume(t)] -> volume(t+1)
 -> DataLoader
 -> Probabilistic 3D U-Net Autoencoder
 -> Latent space
@@ -24,11 +24,13 @@ training.
 The autoencoder is heteroscedastic: for every valid ocean point it predicts
 the next-step Gaussian parameters `mean = mu` and
 `log_variance = log(sigma^2)` for temperature, salinity, `uo`, and `vo`. It
-receives only the current volume and is trained against the following time
-step with the masked Gaussian negative log-likelihood
+receives three consecutive daily volumes and is trained against the following
+time step. The optimization objective combines the masked Gaussian negative
+log-likelihood with a masked MSE term on the predicted mean:
 
 ```text
 0.5 * ((target - mean)^2 * exp(-log_variance) + log_variance)
++ mean_mse_weight * MSE(target, mean)
 ```
 
 The predicted standard deviation is `exp(0.5 * log_variance)`.
@@ -67,21 +69,34 @@ python src/train.py \
   --data-path /content/glorys12_med_test_1994_2003.nc \
   --mask-path /content/drive/MyDrive/Thesis/land_sea_mask.nc \
   --stats-path /content/drive/MyDrive/Thesis/normalization_stats.nc \
-  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster.pt \
+  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster_v2.pt \
   --reuse-stats \
   --device cuda \
   --batch-size 1 \
   --num-workers 2 \
-  --epochs 50 \
-  --patience 10 \
+  --epochs 100 \
+  --patience 15 \
+  --context-steps 3 \
+  --internal-normalization none \
+  --mean-mse-weight 1.0 \
+  --gradient-clip-norm 1.0 \
   --learning-curve-directory \
-    /content/drive/MyDrive/Thesis/thesis_repo/outputs/learning_curves \
+    /content/drive/MyDrive/Thesis/thesis_repo/outputs/learning_curves_v2 \
   --train-model
 ```
 
-Il training esegue al massimo 50 epoche. L'early stopping lo interrompe prima
-se la validation Gaussian NLL non migliora per 10 epoche consecutive; non e'
-necessario fermare manualmente lo script.
+Il nuovo checkpoint usa un nome diverso per non sovrascrivere l'esperimento
+precedente. L'early stopping e la selezione del modello migliore usano la
+validation RMSE. La persistence viene misurata una volta sulla validation e
+resta esclusivamente un riferimento esterno: non entra nel modello o nella
+loss.
+
+Dopo ogni epoca il training set viene valutato nuovamente senza aggiornare i
+pesi. In questo modo le curve train e validation sono calcolate con lo stesso
+modello a pesi fissi. Questo rende il confronto corretto, ma non forza
+artificialmente la validation a essere sopra il training: un anno di
+validation realmente piu' semplice puo' comunque ottenere una metrica
+inferiore.
 
 Dopo ogni epoca viene salvato anche uno snapshot cumulativo nella cartella
 `outputs/learning_curves` della repo. Per esempio,
@@ -90,12 +105,13 @@ Dopo ogni epoca viene salvato anche uno snapshot cumulativo nella cartella
 di `--resume`, gli snapshot delle epoche gia' presenti nel checkpoint vengono
 rigenerati automaticamente prima di continuare il training.
 
-The best model is saved as `best_forecaster.pt`; the state of every completed
-epoch is saved as `best_forecaster_last.pt`. After a Colab interruption,
+The best model is saved at the requested checkpoint path; the state of every
+completed epoch uses the `_last.pt` suffix. After a Colab interruption,
 repeat the same training command and add `--resume` to continue from the next
 epoch instead of restarting from zero. At the end of training, Matplotlib also
-saves `best_forecaster_learning_curve.png` next to the checkpoint. The graph
-compares training and validation Gaussian NLL and highlights the best epoch.
+saves a learning-curve PNG next to the checkpoint. The graph contains NLL and
+RMSE, shows the validation persistence reference and highlights the best
+validation RMSE epoch.
 
 The learning curve can be regenerated directly from the checkpoint history,
 without loading the NetCDF dataset:

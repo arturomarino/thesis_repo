@@ -36,6 +36,7 @@ class VolumeAutoencoderConfig:
     output_channels: int = 4
     base_channels: int = 8
     latent_channels: int = 32
+    normalization: str = "instance"
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -46,6 +47,10 @@ class VolumeAutoencoderConfig:
         ):
             if value <= 0:
                 raise ValueError(f"{name} deve essere positivo.")
+        if self.normalization not in {"none", "instance"}:
+            raise ValueError(
+                "normalization deve essere 'none' oppure 'instance'."
+            )
 
 
 class VolumeUNetAutoencoder(nn.Module):
@@ -63,19 +68,34 @@ class VolumeUNetAutoencoder(nn.Module):
         base = self.config.base_channels
         latent = self.config.latent_channels
 
-        self.encoder_1 = ConvBlock3D(self.config.input_channels, base)
-        self.encoder_2 = DownBlock3D(base, base * 2)
-        self.encoder_3 = DownBlock3D(base * 2, latent)
+        normalization = self.config.normalization
+        self.encoder_1 = ConvBlock3D(
+            self.config.input_channels,
+            base,
+            normalization=normalization,
+        )
+        self.encoder_2 = DownBlock3D(
+            base,
+            base * 2,
+            normalization=normalization,
+        )
+        self.encoder_3 = DownBlock3D(
+            base * 2,
+            latent,
+            normalization=normalization,
+        )
 
         self.decoder_2 = UpBlock3D(
             in_channels=latent,
             skip_channels=base * 2,
             out_channels=base * 2,
+            normalization=normalization,
         )
         self.decoder_1 = UpBlock3D(
             in_channels=base * 2,
             skip_channels=base,
             out_channels=base,
+            normalization=normalization,
         )
         self.mean_projection = nn.Conv3d(
             base,

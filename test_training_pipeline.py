@@ -16,6 +16,7 @@ from training import (
     run_persistence_baseline,
     run_temperature_evaluation,
 )
+from models.autoencoder import VolumeAutoencoderConfig, VolumeUNetAutoencoder
 from visualization import plot_learning_curve
 
 
@@ -111,13 +112,15 @@ def test_plot_learning_curve_creates_png(tmp_path: Path) -> None:
     history = [
         {
             "epoch": 1,
-            "train": {"gaussian_nll": 1.2},
-            "validation": {"gaussian_nll": 1.4},
+            "train": {"gaussian_nll": 1.2, "rmse": 1.1},
+            "validation": {"gaussian_nll": 1.4, "rmse": 1.2},
+            "validation_persistence": {"rmse": 0.9},
         },
         {
             "epoch": 2,
-            "train": {"gaussian_nll": 0.8},
-            "validation": {"gaussian_nll": 0.9},
+            "train": {"gaussian_nll": 0.8, "rmse": 0.7},
+            "validation": {"gaussian_nll": 0.9, "rmse": 0.8},
+            "validation_persistence": {"rmse": 0.9},
         },
     ]
     output_path = tmp_path / "learning_curve.png"
@@ -129,8 +132,21 @@ def test_plot_learning_curve_creates_png(tmp_path: Path) -> None:
 
 
 def test_persistence_baseline_and_skill_score() -> None:
+    batch = _batch()
+    # Due giorni di contesto: la persistence deve usare soltanto l'ultimo.
+    batch["input"]["volume"] = torch.cat(
+        (
+            torch.full_like(batch["target"]["volume"], 99.0),
+            torch.zeros_like(batch["target"]["volume"]),
+        ),
+        dim=1,
+    )
+    batch["input"]["volume_mask"] = torch.ones_like(
+        batch["input"]["volume"],
+        dtype=torch.bool,
+    )
     metrics = run_persistence_baseline(
-        batches=[_batch()],
+        batches=[batch],
         device=torch.device("cpu"),
     )
 
@@ -200,3 +216,42 @@ def test_fit_early_stops_after_patience_without_improvement(
             f"learning_curve_epoch_{epoch:03d}.png"
         )
         assert snapshot_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_multiday_context_trains_against_four_channel_target() -> None:
+    model = VolumeUNetAutoencoder(
+        VolumeAutoencoderConfig(
+            input_channels=12,
+            output_channels=4,
+            base_channels=2,
+            latent_channels=4,
+            normalization="none",
+        )
+    )
+    input_volume = torch.randn(1, 12, 4, 4, 4)
+    target_volume = torch.randn(1, 4, 4, 4, 4)
+    batch = {
+        "input": {
+            "volume": input_volume,
+            "volume_mask": torch.ones_like(input_volume, dtype=torch.bool),
+        },
+        "target": {
+            "volume": target_volume,
+            "volume_mask": torch.ones_like(target_volume, dtype=torch.bool),
+        },
+        "input_time_index": torch.tensor([2]),
+        "target_time_index": torch.tensor([3]),
+    }
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    metrics = run_forecast_epoch(
+        model=model,
+        batches=[batch],
+        device=torch.device("cpu"),
+        optimizer=optimizer,
+        mean_mse_weight=1.0,
+        gradient_clip_norm=1.0,
+    )
+
+    assert metrics.valid_points == target_volume.numel()
+    assert metrics.objective >= metrics.gaussian_nll
