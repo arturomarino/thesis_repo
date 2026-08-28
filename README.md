@@ -153,6 +153,25 @@ validation year by replacing `--evaluate-test` with
 `1 - MSE_model / MSE_persistence`: positive values mean that the neural model
 outperforms the forecast that simply copies the previous day.
 
+The already-trained checkpoint can also be evaluated specifically for sea
+temperature in degrees Celsius, without retraining:
+
+```bash
+python src/train.py \
+  --data-path /content/glorys12_med_test_1994_2003.nc \
+  --mask-path /content/land_sea_mask.nc \
+  --stats-path /content/normalization_stats.nc \
+  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster.pt \
+  --reuse-stats \
+  --device cuda \
+  --temperature-depth 0.5 \
+  --evaluate-temperature-validation
+```
+
+This reports physical RMSE, MAE, bias, predicted uncertainty and coverage for
+all depths and for the available level nearest to the requested depth. Use
+`--evaluate-temperature-test` only after model selection is complete.
+
 Quick checks:
 
 ```bash

@@ -21,6 +21,7 @@ from training import (
     rmse_skill_score,
     run_forecast_epoch,
     run_persistence_baseline,
+    run_temperature_evaluation,
     train_autoencoder_step,
 )
 from visualization import (
@@ -172,6 +173,22 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Confronta checkpoint e persistence baseline sul test annuale."
         ),
+    )
+    parser.add_argument(
+        "--evaluate-temperature-validation",
+        action="store_true",
+        help="Valuta la sola temperatura in gradi Celsius sulla validation.",
+    )
+    parser.add_argument(
+        "--evaluate-temperature-test",
+        action="store_true",
+        help="Valuta la sola temperatura in gradi Celsius sul test.",
+    )
+    parser.add_argument(
+        "--temperature-depth",
+        type=float,
+        default=0.5,
+        help="Profondita' per il report della temperatura. Default: 0.5 m.",
     )
     parser.add_argument(
         "--plot-learning-curve",
@@ -340,6 +357,26 @@ def main() -> None:
         evaluate_checkpoint_against_persistence(
             args,
             loaders.test,
+            device,
+            split_label="Test",
+        )
+
+    if args.evaluate_temperature_validation:
+        evaluate_temperature_checkpoint(
+            args,
+            loaders.validation,
+            normalizer.statistics,
+            splits.validation,
+            device,
+            split_label="Validation",
+        )
+
+    if args.evaluate_temperature_test:
+        evaluate_temperature_checkpoint(
+            args,
+            loaders.test,
+            normalizer.statistics,
+            splits.test,
             device,
             split_label="Test",
         )
@@ -547,6 +584,94 @@ def evaluate_checkpoint_against_persistence(
         f"{persistence.mae:.6f}"
     )
     print(f"{split_label} RMSE skill vs persistence: {skill:.6f}")
+
+
+def evaluate_temperature_checkpoint(
+    args: argparse.Namespace,
+    data_loader,
+    statistics: dict[str, xr.DataArray],
+    split: xr.Dataset,
+    device: torch.device,
+    *,
+    split_label: str,
+) -> None:
+    """Stampa metriche della temperatura in gradi Celsius."""
+
+    checkpoint = read_forecaster_checkpoint(args.checkpoint_path, device)
+    saved_config = checkpoint.get("model_config")
+    if not isinstance(saved_config, dict):
+        raise ValueError("Configurazione del modello assente nel checkpoint.")
+    if "thetao_cglo_std" not in statistics:
+        raise ValueError("Deviazione standard della temperatura assente.")
+    if "depth" not in split.coords:
+        raise ValueError("Coordinata depth assente dal dataset.")
+
+    temperature_std = statistics["thetao_cglo_std"]
+    if set(temperature_std.dims) != {"depth"}:
+        raise ValueError(
+            "thetao_cglo_std deve dipendere soltanto dalla profondita'."
+        )
+    temperature_std = temperature_std.transpose("depth")
+    depth_values = tuple(float(value) for value in split["depth"].values)
+
+    model = VolumeUNetAutoencoder(
+        VolumeAutoencoderConfig(**saved_config)
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    result = run_temperature_evaluation(
+        model=model,
+        batches=data_loader,
+        device=device,
+        temperature_std_by_depth=torch.as_tensor(
+            temperature_std.values,
+            dtype=torch.float32,
+        ),
+        depth_values_m=depth_values,
+        requested_depth_m=args.temperature_depth,
+        progress_label=(
+            f"{split_label} temperatura" if not args.no_progress else None
+        ),
+    )
+
+    print(f"Checkpoint epoca: {checkpoint['epoch']}")
+    _print_temperature_metrics(
+        split_label,
+        "tutte le profondita'",
+        result.all_depths,
+    )
+    _print_temperature_metrics(
+        split_label,
+        f"profondita' {result.selected_depth_m:.3f} m",
+        result.selected_depth,
+    )
+
+
+def _print_temperature_metrics(split_label: str, scope: str, metrics) -> None:
+    prefix = f"{split_label} temperatura ({scope})"
+    print(f"{prefix} RMSE modello: {metrics.model_rmse_c:.6f} °C")
+    print(f"{prefix} MAE modello: {metrics.model_mae_c:.6f} °C")
+    print(f"{prefix} bias modello: {metrics.model_bias_c:.6f} °C")
+    print(
+        f"{prefix} sigma media prevista: "
+        f"{metrics.model_mean_standard_deviation_c:.6f} °C"
+    )
+    print(
+        f"{prefix} coverage 68/95: "
+        f"{metrics.model_coverage_68:.3f}/{metrics.model_coverage_95:.3f}"
+    )
+    print(
+        f"{prefix} RMSE persistence: "
+        f"{metrics.persistence_rmse_c:.6f} °C"
+    )
+    print(
+        f"{prefix} MAE persistence: "
+        f"{metrics.persistence_mae_c:.6f} °C"
+    )
+    print(
+        f"{prefix} bias persistence: "
+        f"{metrics.persistence_bias_c:.6f} °C"
+    )
+    print(f"{prefix} RMSE skill vs persistence: {metrics.rmse_skill_score:.6f}")
 
 
 def smoke_test_dataset() -> None:

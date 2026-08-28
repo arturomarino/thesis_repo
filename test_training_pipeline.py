@@ -14,6 +14,7 @@ from training import (
     rmse_skill_score,
     run_forecast_epoch,
     run_persistence_baseline,
+    run_temperature_evaluation,
 )
 from visualization import plot_learning_curve
 
@@ -137,6 +138,39 @@ def test_persistence_baseline_and_skill_score() -> None:
     assert metrics.mae == 1.0
     assert metrics.valid_points == 2
     assert rmse_skill_score(model_rmse=0.5, persistence_rmse=1.0) == 0.75
+
+
+def test_temperature_evaluation_returns_physical_metrics() -> None:
+    batch = _batch()
+    batch["input"]["volume"] = torch.tensor(
+        [[[[[1.0]], [[3.0]]]]],
+    ).repeat(1, 4, 1, 1, 1)
+    batch["target"]["volume"] = torch.tensor(
+        [[[[[2.0]], [[5.0]]]]],
+    ).repeat(1, 4, 1, 1, 1)
+    batch["input"]["volume_mask"] = torch.ones_like(
+        batch["input"]["volume"],
+        dtype=torch.bool,
+    )
+    batch["target"]["volume_mask"] = torch.ones_like(
+        batch["target"]["volume"],
+        dtype=torch.bool,
+    )
+    result = run_temperature_evaluation(
+        model=TinyProbabilisticForecaster(),
+        batches=[batch],
+        device=torch.device("cpu"),
+        temperature_std_by_depth=torch.tensor([10.0, 2.0]),
+        depth_values_m=(0.5, 10.0),
+        requested_depth_m=0.5,
+    )
+
+    assert result.selected_depth_m == 0.5
+    assert result.all_depths.model_mae_c == 15.0
+    assert result.all_depths.model_bias_c == -15.0
+    assert result.all_depths.persistence_mae_c == 7.0
+    assert result.selected_depth.model_rmse_c == 20.0
+    assert result.selected_depth.persistence_rmse_c == 10.0
 
 
 def test_fit_early_stops_after_patience_without_improvement(

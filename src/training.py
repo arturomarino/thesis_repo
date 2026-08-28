@@ -67,6 +67,32 @@ class PersistenceBaselineMetrics:
 
 
 @dataclass(frozen=True)
+class TemperatureComparisonMetrics:
+    """Confronto in gradi Celsius fra modello e persistence."""
+
+    model_rmse_c: float
+    model_mae_c: float
+    model_bias_c: float
+    model_mean_standard_deviation_c: float
+    model_coverage_68: float
+    model_coverage_95: float
+    persistence_rmse_c: float
+    persistence_mae_c: float
+    persistence_bias_c: float
+    rmse_skill_score: float
+    valid_points: int
+
+
+@dataclass(frozen=True)
+class TemperatureEvaluationResult:
+    """Metriche globali e a una profondita' selezionata."""
+
+    all_depths: TemperatureComparisonMetrics
+    selected_depth: TemperatureComparisonMetrics
+    selected_depth_m: float
+
+
+@dataclass(frozen=True)
 class ForecastFitResult:
     """Risultato del fitting e posizione del modello migliore."""
 
@@ -322,6 +348,234 @@ def rmse_skill_score(model_rmse: float, persistence_rmse: float) -> float:
     if persistence_rmse <= 0:
         raise ValueError("persistence_rmse deve essere positivo.")
     return 1.0 - (model_rmse / persistence_rmse) ** 2
+
+
+def run_temperature_evaluation(
+    model: nn.Module,
+    batches: Iterable[OceanForecastSample],
+    device: torch.device,
+    temperature_std_by_depth: torch.Tensor,
+    depth_values_m: tuple[float, ...],
+    requested_depth_m: float = 0.5,
+    progress_label: str | None = None,
+) -> TemperatureEvaluationResult:
+    """Valuta la temperatura in unita' fisiche senza riaddestrare il modello."""
+
+    if temperature_std_by_depth.ndim != 1:
+        raise ValueError("Lo standard della temperatura deve essere 1D.")
+    if len(depth_values_m) != temperature_std_by_depth.numel():
+        raise ValueError(
+            "Il numero di profondita' non coincide con gli standard "
+            "della temperatura."
+        )
+    if not depth_values_m:
+        raise ValueError("Il dataset non contiene profondita'.")
+
+    selected_depth_index = min(
+        range(len(depth_values_m)),
+        key=lambda index: abs(depth_values_m[index] - requested_depth_m),
+    )
+    selected_depth_m = float(depth_values_m[selected_depth_index])
+    temperature_std = temperature_std_by_depth.to(
+        device=device,
+        dtype=torch.float32,
+    )
+    if not torch.isfinite(temperature_std).all() or bool(
+        (temperature_std <= 0).any()
+    ):
+        raise ValueError("Gli standard della temperatura devono essere validi.")
+    temperature_std = temperature_std.view(1, -1, 1, 1)
+
+    all_depths = _new_temperature_accumulator()
+    selected_depth = _new_temperature_accumulator()
+    model.eval()
+
+    iterable = batches
+    progress_bar = None
+    if progress_label is not None and tqdm is not None:
+        progress_bar = tqdm(
+            batches,
+            desc=progress_label,
+            total=len(batches) if hasattr(batches, "__len__") else None,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        iterable = progress_bar
+
+    with torch.inference_mode():
+        for batch in iterable:
+            input_volume = batch["input"]["volume"].to(
+                device,
+                non_blocking=True,
+            )
+            target_volume = batch["target"]["volume"].to(
+                device,
+                non_blocking=True,
+            )
+            target_mask = batch["target"]["volume_mask"].to(
+                device,
+                non_blocking=True,
+                dtype=torch.bool,
+            )
+            if input_volume.ndim != 5 or input_volume.shape[1] < 1:
+                raise ValueError("Forma del volume di input non valida.")
+            if target_volume.shape != input_volume.shape:
+                raise ValueError("Input e target devono avere la stessa forma.")
+            if target_mask.shape != target_volume.shape:
+                raise ValueError("Target mask e target devono avere la stessa forma.")
+            if target_volume.shape[2] != temperature_std.shape[1]:
+                raise ValueError("Profondita' inattesa nel batch.")
+
+            output = model(input_volume)
+            mean = output["mean"]
+            log_variance = output["log_variance"]
+            if mean.shape != target_volume.shape:
+                raise ValueError("Forma della media prevista inattesa.")
+            if log_variance.shape != target_volume.shape:
+                raise ValueError("Forma della log-varianza prevista inattesa.")
+
+            target_temperature = target_volume[:, 0]
+            valid_mask = target_mask[:, 0]
+            model_error_c = (
+                mean[:, 0] - target_temperature
+            ) * temperature_std
+            persistence_error_c = (
+                input_volume[:, 0] - target_temperature
+            ) * temperature_std
+            model_standard_deviation_c = torch.exp(
+                0.5 * log_variance[:, 0]
+            ) * temperature_std
+
+            _accumulate_temperature_metrics(
+                all_depths,
+                model_error_c,
+                persistence_error_c,
+                model_standard_deviation_c,
+                valid_mask,
+            )
+            _accumulate_temperature_metrics(
+                selected_depth,
+                model_error_c[:, selected_depth_index],
+                persistence_error_c[:, selected_depth_index],
+                model_standard_deviation_c[:, selected_depth_index],
+                valid_mask[:, selected_depth_index],
+            )
+            if progress_bar is not None and all_depths["valid_points"]:
+                progress_bar.set_postfix(
+                    rmse_c=(
+                        f"{(all_depths['model_squared_error_sum'] / all_depths['valid_points']) ** 0.5:.3f}"
+                    ),
+                )
+
+    return TemperatureEvaluationResult(
+        all_depths=_finalize_temperature_metrics(all_depths),
+        selected_depth=_finalize_temperature_metrics(selected_depth),
+        selected_depth_m=selected_depth_m,
+    )
+
+
+def _new_temperature_accumulator() -> dict[str, float | int]:
+    return {
+        "model_squared_error_sum": 0.0,
+        "model_absolute_error_sum": 0.0,
+        "model_error_sum": 0.0,
+        "model_standard_deviation_sum": 0.0,
+        "model_coverage_68_count": 0,
+        "model_coverage_95_count": 0,
+        "persistence_squared_error_sum": 0.0,
+        "persistence_absolute_error_sum": 0.0,
+        "persistence_error_sum": 0.0,
+        "valid_points": 0,
+    }
+
+
+def _accumulate_temperature_metrics(
+    accumulator: dict[str, float | int],
+    model_error_c: torch.Tensor,
+    persistence_error_c: torch.Tensor,
+    model_standard_deviation_c: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> None:
+    valid_points = int(valid_mask.sum().item())
+    if valid_points == 0:
+        return
+
+    model_error = model_error_c[valid_mask]
+    persistence_error = persistence_error_c[valid_mask]
+    standard_deviation = model_standard_deviation_c[valid_mask]
+    absolute_model_error = model_error.abs()
+
+    accumulator["model_squared_error_sum"] += float(
+        model_error.pow(2).sum().item()
+    )
+    accumulator["model_absolute_error_sum"] += float(
+        absolute_model_error.sum().item()
+    )
+    accumulator["model_error_sum"] += float(model_error.sum().item())
+    accumulator["model_standard_deviation_sum"] += float(
+        standard_deviation.sum().item()
+    )
+    accumulator["model_coverage_68_count"] += int(
+        (absolute_model_error <= standard_deviation).sum().item()
+    )
+    accumulator["model_coverage_95_count"] += int(
+        (absolute_model_error <= 1.96 * standard_deviation).sum().item()
+    )
+    accumulator["persistence_squared_error_sum"] += float(
+        persistence_error.pow(2).sum().item()
+    )
+    accumulator["persistence_absolute_error_sum"] += float(
+        persistence_error.abs().sum().item()
+    )
+    accumulator["persistence_error_sum"] += float(
+        persistence_error.sum().item()
+    )
+    accumulator["valid_points"] += valid_points
+
+
+def _finalize_temperature_metrics(
+    accumulator: dict[str, float | int],
+) -> TemperatureComparisonMetrics:
+    valid_points = int(accumulator["valid_points"])
+    if valid_points == 0:
+        raise ValueError("La valutazione non contiene temperature valide.")
+
+    model_rmse_c = (
+        float(accumulator["model_squared_error_sum"]) / valid_points
+    ) ** 0.5
+    persistence_rmse_c = (
+        float(accumulator["persistence_squared_error_sum"]) / valid_points
+    ) ** 0.5
+    return TemperatureComparisonMetrics(
+        model_rmse_c=model_rmse_c,
+        model_mae_c=(
+            float(accumulator["model_absolute_error_sum"]) / valid_points
+        ),
+        model_bias_c=float(accumulator["model_error_sum"]) / valid_points,
+        model_mean_standard_deviation_c=(
+            float(accumulator["model_standard_deviation_sum"])
+            / valid_points
+        ),
+        model_coverage_68=(
+            int(accumulator["model_coverage_68_count"]) / valid_points
+        ),
+        model_coverage_95=(
+            int(accumulator["model_coverage_95_count"]) / valid_points
+        ),
+        persistence_rmse_c=persistence_rmse_c,
+        persistence_mae_c=(
+            float(accumulator["persistence_absolute_error_sum"])
+            / valid_points
+        ),
+        persistence_bias_c=(
+            float(accumulator["persistence_error_sum"]) / valid_points
+        ),
+        rmse_skill_score=rmse_skill_score(
+            model_rmse_c,
+            persistence_rmse_c,
+        ),
+        valid_points=valid_points,
+    )
 
 
 def fit_forecaster(
