@@ -128,8 +128,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mean-mse-weight",
         type=float,
-        default=1.0,
-        help="Peso MSE aggiunto alla Gaussian NLL. Default: 1.0.",
+        default=2.0,
+        help="Peso MSE aggiunto alla Gaussian NLL. Default: 2.0.",
+    )
+    parser.add_argument(
+        "--temperature-mse-weight",
+        type=float,
+        default=2.0,
+        help=(
+            "Peso relativo del canale temperatura dentro la MSE. Default: 2.0."
+        ),
     )
     parser.add_argument(
         "--gradient-clip-norm",
@@ -377,6 +385,8 @@ def main() -> None:
         raise ValueError("context-steps deve essere positivo.")
     if args.mean_mse_weight < 0:
         raise ValueError("mean-mse-weight non puo' essere negativo.")
+    if args.temperature_mse_weight <= 0:
+        raise ValueError("temperature-mse-weight deve essere positivo.")
     if args.gradient_clip_norm <= 0:
         raise ValueError("gradient-clip-norm deve essere positivo.")
     train_dataset = OceanForecastDataset(
@@ -528,11 +538,13 @@ def run_full_training(
             saved_training_config.get("context_steps") != args.context_steps
             or saved_training_config.get("mean_mse_weight")
             != args.mean_mse_weight
+            or saved_training_config.get("temperature_mse_weight")
+            != args.temperature_mse_weight
             or saved_training_config.get("gradient_clip_norm")
             != args.gradient_clip_norm
         ):
             raise ValueError(
-                "Contesto o peso MSE non coincidono con il checkpoint."
+                "Contesto o pesi della loss non coincidono con il checkpoint."
             )
         model.load_state_dict(resume_checkpoint["model_state_dict"])
         optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
@@ -552,9 +564,11 @@ def run_full_training(
         learning_curve_directory=args.learning_curve_directory,
         mean_mse_weight=args.mean_mse_weight,
         gradient_clip_norm=args.gradient_clip_norm,
+        temperature_mse_weight=args.temperature_mse_weight,
         training_config={
             "context_steps": args.context_steps,
             "mean_mse_weight": args.mean_mse_weight,
+            "temperature_mse_weight": args.temperature_mse_weight,
             "gradient_clip_norm": args.gradient_clip_norm,
             "selection_metric": "validation_rmse",
             "post_epoch_train_evaluation": True,
@@ -565,6 +579,10 @@ def run_full_training(
     print(f"Epoca migliore: {result.best_epoch}")
     print(f"Validation NLL migliore: {result.best_validation_nll:.6f}")
     print(f"Validation RMSE migliore: {result.best_validation_rmse:.6f}")
+    print(
+        "Training persistence RMSE: "
+        f"{result.train_persistence_rmse:.6f}"
+    )
     print(
         "Validation persistence RMSE: "
         f"{result.validation_persistence_rmse:.6f}"

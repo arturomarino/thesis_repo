@@ -114,12 +114,14 @@ def test_plot_learning_curve_creates_png(tmp_path: Path) -> None:
             "epoch": 1,
             "train": {"gaussian_nll": 1.2, "rmse": 1.1},
             "validation": {"gaussian_nll": 1.4, "rmse": 1.2},
+            "train_persistence": {"rmse": 1.0},
             "validation_persistence": {"rmse": 0.9},
         },
         {
             "epoch": 2,
             "train": {"gaussian_nll": 0.8, "rmse": 0.7},
             "validation": {"gaussian_nll": 0.9, "rmse": 0.8},
+            "train_persistence": {"rmse": 1.0},
             "validation_persistence": {"rmse": 0.9},
         },
     ]

@@ -100,6 +100,7 @@ class ForecastFitResult:
     best_epoch: int
     best_validation_nll: float
     best_validation_rmse: float
+    train_persistence_rmse: float
     validation_persistence_rmse: float
     epochs_completed: int
     checkpoint_path: Path
@@ -151,6 +152,7 @@ def run_forecast_epoch(
     progress_label: str | None = None,
     mean_mse_weight: float = 0.0,
     gradient_clip_norm: float | None = None,
+    temperature_mse_weight: float = 1.0,
 ) -> ForecastEpochMetrics:
     """
     Esegue un'epoca.
@@ -161,6 +163,8 @@ def run_forecast_epoch(
     is_training = optimizer is not None
     if mean_mse_weight < 0:
         raise ValueError("mean_mse_weight non puo' essere negativo.")
+    if temperature_mse_weight <= 0:
+        raise ValueError("temperature_mse_weight deve essere positivo.")
     model.train(is_training)
 
     nll_sum = 0.0
@@ -211,7 +215,12 @@ def run_forecast_epoch(
                 target=target_volume,
                 mask=target_mask,
             )
-            mean_mse = masked_mse_loss(mean, target_volume, target_mask)
+            mean_mse = _weighted_channel_mse_loss(
+                mean,
+                target_volume,
+                target_mask,
+                temperature_weight=temperature_mse_weight,
+            )
             objective = nll + mean_mse_weight * mean_mse
 
             if is_training:
@@ -363,6 +372,37 @@ def run_persistence_baseline(
         mae=absolute_error_sum / valid_points_total,
         valid_points=valid_points_total,
     )
+
+
+def _weighted_channel_mse_loss(
+    mean: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    temperature_weight: float,
+) -> torch.Tensor:
+    """MSE mascherato con peso opzionale maggiore sul canale temperatura."""
+
+    if temperature_weight == 1.0:
+        return masked_mse_loss(mean, target, mask)
+    if mean.ndim < 2:
+        raise ValueError("Il tensore previsto deve avere una dimensione canale.")
+
+    weights = torch.ones(
+        mean.shape[1],
+        dtype=mean.dtype,
+        device=mean.device,
+    )
+    weights[0] = temperature_weight
+    broadcast_shape = [1] * mean.ndim
+    broadcast_shape[1] = mean.shape[1]
+    weights = weights.view(*broadcast_shape)
+
+    valid_mask = mask.to(dtype=mean.dtype)
+    weighted_mask = valid_mask * weights
+    valid_points = weighted_mask.sum()
+    if valid_points <= 0:
+        raise ValueError("La loss non contiene punti oceanici validi.")
+    return ((mean - target).pow(2) * weighted_mask).sum() / valid_points
 
 
 def rmse_skill_score(model_rmse: float, persistence_rmse: float) -> float:
@@ -619,6 +659,7 @@ def fit_forecaster(
     mean_mse_weight: float = 1.0,
     training_config: dict[str, object] | None = None,
     gradient_clip_norm: float | None = 1.0,
+    temperature_mse_weight: float = 1.0,
 ) -> ForecastFitResult:
     """Addestra con early stopping e ripresa da un checkpoint opzionale."""
 
@@ -626,6 +667,8 @@ def fit_forecaster(
         raise ValueError("epochs deve essere positivo.")
     if patience <= 0:
         raise ValueError("patience deve essere positivo.")
+    if temperature_mse_weight <= 0:
+        raise ValueError("temperature_mse_weight deve essere positivo.")
 
     checkpoint_path = Path(checkpoint_path)
     last_checkpoint_path = _last_checkpoint_path(checkpoint_path)
@@ -661,6 +704,13 @@ def fit_forecaster(
             "Il checkpoint ha gia' raggiunto il numero massimo di epoche."
         )
 
+    train_persistence_metrics = run_persistence_baseline(
+        batches=train_batches,
+        device=device,
+        progress_label=(
+            "Training persistence baseline" if show_progress else None
+        ),
+    )
     persistence_metrics = run_persistence_baseline(
         batches=validation_batches,
         device=device,
@@ -680,6 +730,7 @@ def fit_forecaster(
             ),
             mean_mse_weight=mean_mse_weight,
             gradient_clip_norm=gradient_clip_norm,
+            temperature_mse_weight=temperature_mse_weight,
         )
         # Ricalcolo a pesi fissi: rende train e validation confrontabili.
         train_metrics = run_forecast_epoch(
@@ -690,6 +741,7 @@ def fit_forecaster(
                 f"Train eval {epoch}/{epochs}" if show_progress else None
             ),
             mean_mse_weight=mean_mse_weight,
+            temperature_mse_weight=temperature_mse_weight,
         )
         validation_metrics = run_forecast_epoch(
             model=model,
@@ -701,6 +753,7 @@ def fit_forecaster(
                 else None
             ),
             mean_mse_weight=mean_mse_weight,
+            temperature_mse_weight=temperature_mse_weight,
         )
         validation_skill = rmse_skill_score(
             validation_metrics.rmse,
@@ -711,6 +764,7 @@ def fit_forecaster(
                 "epoch": epoch,
                 "train": asdict(train_metrics),
                 "validation": asdict(validation_metrics),
+                "train_persistence": asdict(train_persistence_metrics),
                 "validation_persistence": asdict(persistence_metrics),
                 "validation_rmse_skill": validation_skill,
             }
@@ -723,6 +777,7 @@ def fit_forecaster(
             f"train RMSE {train_metrics.rmse:.6f} | "
             f"val NLL {validation_metrics.gaussian_nll:.6f} | "
             f"val RMSE {validation_metrics.rmse:.6f} | "
+            f"train persistence RMSE {train_persistence_metrics.rmse:.6f} | "
             f"persistence RMSE {persistence_metrics.rmse:.6f} | "
             f"skill {validation_skill:.4f} | "
             f"coverage 68/95 "
@@ -785,6 +840,7 @@ def fit_forecaster(
         best_epoch=best_epoch,
         best_validation_nll=best_validation_nll,
         best_validation_rmse=best_validation_rmse,
+        train_persistence_rmse=train_persistence_metrics.rmse,
         validation_persistence_rmse=persistence_metrics.rmse,
         epochs_completed=epoch,
         checkpoint_path=checkpoint_path,

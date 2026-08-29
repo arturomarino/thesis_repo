@@ -15,6 +15,7 @@ def plot_learning_curve(
     validation_nll: list[float] = []
     train_rmse: list[float] = []
     validation_rmse: list[float] = []
+    train_persistence_rmse: list[float | None] = []
     persistence_rmse: list[float | None] = []
 
     for entry in history:
@@ -33,6 +34,12 @@ def plot_learning_curve(
             )
             train_rmse.append(float(train_metrics["rmse"]))
             validation_rmse.append(float(validation_metrics["rmse"]))
+            train_persistence_metrics = entry.get("train_persistence")
+            train_persistence_rmse.append(
+                float(train_persistence_metrics["rmse"])
+                if isinstance(train_persistence_metrics, dict)
+                else None
+            )
             persistence_metrics = entry.get("validation_persistence")
             persistence_rmse.append(
                 float(persistence_metrics["rmse"])
@@ -107,6 +114,17 @@ def plot_learning_curve(
         markersize=3,
         label="Validation RMSE",
     )
+    if train_persistence_rmse and all(
+        value is not None for value in train_persistence_rmse
+    ):
+        rmse_axis.plot(
+            epochs,
+            [float(value) for value in train_persistence_rmse],
+            color="#2563eb",
+            linewidth=1.5,
+            linestyle=":",
+            label="Training persistence RMSE",
+        )
     if persistence_rmse and all(
         value is not None for value in persistence_rmse
     ):
