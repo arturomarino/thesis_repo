@@ -82,12 +82,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--label-step",
-        type=int,
-        default=8,
-        help="Mostra un valore previsto ogni N punti della griglia.",
-    )
-    parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
         default="auto",
@@ -406,11 +400,7 @@ def plot_temperature_forecast(
     *,
     input_date: str,
     checkpoint_epoch: int,
-    label_step: int,
 ) -> Path:
-    if label_step <= 0:
-        raise ValueError("label-step deve essere positivo.")
-
     values = np.asarray(forecast.values, dtype=float)
     finite_values = values[np.isfinite(values)]
     if finite_values.size == 0:
@@ -419,7 +409,6 @@ def plot_temperature_forecast(
     import matplotlib
 
     matplotlib.use("Agg")
-    import matplotlib.patheffects as path_effects
     import matplotlib.pyplot as plt
 
     latitudes = np.asarray(forecast["latitude"].values)
@@ -439,27 +428,6 @@ def plot_temperature_forecast(
         vmax=float(finite_values.max()),
     )
     axis.set_facecolor("#d9d9d9")
-
-    labels_drawn = 0
-    for latitude_index in range(0, len(latitudes), label_step):
-        for longitude_index in range(0, len(longitudes), label_step):
-            value = values[latitude_index, longitude_index]
-            if not np.isfinite(value):
-                continue
-            label = axis.text(
-                longitudes[longitude_index],
-                latitudes[latitude_index],
-                f"{value:.1f}",
-                ha="center",
-                va="center",
-                color="white",
-                fontsize=6.5,
-                fontweight="bold",
-            )
-            label.set_path_effects(
-                [path_effects.withStroke(linewidth=1.5, foreground="black")]
-            )
-            labels_drawn += 1
 
     color_bar = figure.colorbar(mesh, ax=axis, pad=0.02)
     color_bar.set_label("Temperatura prevista (°C)")
@@ -481,7 +449,6 @@ def plot_temperature_forecast(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
-    print(f"Valori numerici disegnati: {labels_drawn}")
     return output_path
 
 
@@ -501,8 +468,6 @@ def build_output_path(
 
 def main() -> None:
     args = parse_args()
-    if args.label_step <= 0:
-        raise ValueError("label-step deve essere positivo.")
     for label, path in (
         ("Dataset", args.data_path),
         ("Statistiche", args.stats_path),
@@ -553,7 +518,6 @@ def main() -> None:
         output_path,
         input_date=input_date,
         checkpoint_epoch=checkpoint_epoch,
-        label_step=args.label_step,
     )
 
     print(f"Device: {device}")
