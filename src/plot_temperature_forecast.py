@@ -387,6 +387,46 @@ def select_forecast_depth(
     return forecast.sel(depth=requested_depth, method="nearest").load()
 
 
+def observed_temperature_for_date(
+    dataset: xr.Dataset,
+    forecast_date: np.datetime64,
+) -> xr.DataArray:
+    """Restituisce la temperatura osservata nel giorno previsto."""
+
+    if "thetao_cglo" not in dataset:
+        raise ValueError("Variabile della temperatura thetao_cglo non trovata.")
+    time_index = find_input_time_index(dataset, format_date(forecast_date))
+    observed = dataset["thetao_cglo"].isel(time=time_index).load()
+    return observed.transpose("depth", "latitude", "longitude")
+
+
+def calculate_temperature_error(
+    forecast: xr.DataArray,
+    observed: xr.DataArray,
+) -> xr.DataArray:
+    """Calcola errore previsto meno osservato, in gradi Celsius."""
+
+    try:
+        aligned_forecast, aligned_observed = xr.align(
+            forecast,
+            observed,
+            join="exact",
+        )
+    except ValueError as error:
+        raise ValueError(
+            "Previsione e temperatura osservata non hanno la stessa griglia."
+        ) from error
+    error_map = aligned_forecast - aligned_observed
+    error_map.name = "temperature_forecast_error"
+    error_map.attrs.update(
+        {
+            "units": "degrees_C",
+            "long_name": "predicted temperature minus observed temperature",
+        }
+    )
+    return error_map
+
+
 def format_date(value: object) -> str:
     return np.datetime_as_string(
         np.asarray(value).astype("datetime64[D]"),
@@ -452,6 +492,71 @@ def plot_temperature_forecast(
     return output_path
 
 
+def plot_temperature_error(
+    error_map: xr.DataArray,
+    output_path: Path,
+    *,
+    input_date: str,
+    checkpoint_epoch: int,
+) -> Path:
+    """Salva la mappa dell'errore: previsione meno temperatura osservata."""
+
+    values = np.asarray(error_map.values, dtype=float)
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        raise ValueError("La mappa degli errori non contiene valori validi.")
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+
+    latitudes = np.asarray(error_map["latitude"].values)
+    longitudes = np.asarray(error_map["longitude"].values)
+    forecast_date = format_date(error_map["time"].values)
+    depth = float(np.asarray(error_map["depth"].values))
+    color_limit = max(float(np.abs(finite_values).max()), 1e-6)
+
+    figure, axis = plt.subplots(figsize=(16, 8))
+    color_map = plt.get_cmap("bwr").with_extremes(bad="#d9d9d9")
+    mesh = axis.pcolormesh(
+        longitudes,
+        latitudes,
+        np.ma.masked_invalid(values),
+        cmap=color_map,
+        norm=TwoSlopeNorm(
+            vmin=-color_limit,
+            vcenter=0.0,
+            vmax=color_limit,
+        ),
+        shading="auto",
+    )
+    axis.set_facecolor("#d9d9d9")
+
+    color_bar = figure.colorbar(mesh, ax=axis, pad=0.02)
+    color_bar.set_label("Errore: temperatura prevista − reale (°C)")
+    axis.set(
+        title=(
+            f"Errore della previsione di temperatura marina — {forecast_date}\n"
+            f"previsione − reale | input {input_date} → t+1 | "
+            f"profondità {depth:.2f} m | checkpoint epoca {checkpoint_epoch}"
+        ),
+        xlabel="Longitudine (°)",
+        ylabel="Latitudine (°)",
+    )
+    mean_latitude = float(np.mean(latitudes))
+    axis.set_aspect(1.0 / np.cos(np.deg2rad(mean_latitude)))
+    axis.grid(color="black", alpha=0.15, linewidth=0.5)
+    figure.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
 def build_output_path(
     output_directory: Path,
     input_date: str,
@@ -462,6 +567,20 @@ def build_output_path(
     depth_token = f"{depth:.2f}m".replace(".", "p")
     return output_directory / (
         f"temperature_forecast_input_{input_date}_target_{forecast_date}_"
+        f"depth_{depth_token}.png"
+    )
+
+
+def build_error_output_path(
+    output_directory: Path,
+    input_date: str,
+    forecast: xr.DataArray,
+) -> Path:
+    forecast_date = format_date(forecast["time"].values)
+    depth = float(np.asarray(forecast["depth"].values))
+    depth_token = f"{depth:.2f}m".replace(".", "p")
+    return output_directory / (
+        f"temperature_error_input_{input_date}_target_{forecast_date}_"
         f"depth_{depth_token}.png"
     )
 
@@ -506,8 +625,11 @@ def main() -> None:
             dataset,
             forecast_day,
         )
+        observed = observed_temperature_for_date(dataset, forecast_day)
 
     forecast_slice = select_forecast_depth(forecast, args.depth)
+    observed_slice = select_forecast_depth(observed, args.depth)
+    error_slice = calculate_temperature_error(forecast_slice, observed_slice)
     output_path = build_output_path(
         args.output_directory,
         input_date,
@@ -516,6 +638,17 @@ def main() -> None:
     plot_temperature_forecast(
         forecast_slice,
         output_path,
+        input_date=input_date,
+        checkpoint_epoch=checkpoint_epoch,
+    )
+    error_output_path = build_error_output_path(
+        args.output_directory,
+        input_date,
+        error_slice,
+    )
+    plot_temperature_error(
+        error_slice,
+        error_output_path,
         input_date=input_date,
         checkpoint_epoch=checkpoint_epoch,
     )
@@ -533,6 +666,7 @@ def main() -> None:
     )
     print(f"Checkpoint epoca: {checkpoint_epoch}")
     print(f"Mappa della previsione salvata in: {output_path}")
+    print(f"Mappa dell'errore salvata in: {error_output_path}")
 
 
 if __name__ == "__main__":

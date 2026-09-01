@@ -14,6 +14,7 @@ from models.autoencoder import (
 )
 from plot_temperature_forecast import (
     VOLUME_VARIABLES,
+    calculate_temperature_error,
     denormalize_temperature_forecast,
     find_input_time_index,
     prepare_normalized_input,
@@ -173,3 +174,30 @@ def test_resolves_user_selected_forecast_date() -> None:
 
     assert input_date == "2000-08-14"
     assert forecast_day == np.datetime64("2000-08-15")
+
+
+def test_calculates_signed_temperature_error() -> None:
+    coordinates = {
+        "time": np.datetime64("2000-01-02"),
+        "depth": np.float32(0.5),
+        "latitude": np.array([40.0, 41.0]),
+        "longitude": np.array([10.0, 11.0]),
+    }
+    forecast = xr.DataArray(
+        [[12.0, 8.0], [10.0, np.nan]],
+        dims=("latitude", "longitude"),
+        coords=coordinates,
+    )
+    observed = xr.DataArray(
+        [[10.0, 10.0], [10.0, 9.0]],
+        dims=("latitude", "longitude"),
+        coords=coordinates,
+    )
+
+    error_map = calculate_temperature_error(forecast, observed)
+
+    assert error_map.values[0, 0] == 2.0
+    assert error_map.values[0, 1] == -2.0
+    assert error_map.values[1, 0] == 0.0
+    assert np.isnan(error_map.values[1, 1])
+    assert error_map.attrs["units"] == "degrees_C"
