@@ -470,15 +470,15 @@ def plot_temperature_forecast(
     axis.set_facecolor("#d9d9d9")
 
     color_bar = figure.colorbar(mesh, ax=axis, pad=0.02)
-    color_bar.set_label("Temperatura prevista (°C)")
+    color_bar.set_label("Forecast temperature (°C)")
     axis.set(
         title=(
-            f"Previsione temperatura marina — {forecast_date}\n"
-            f"Input {input_date} → t+1 | profondità {depth:.2f} m | "
-            f"checkpoint epoca {checkpoint_epoch} | media μ"
+            f"One-day-ahead sea temperature forecast — {forecast_date}\n"
+            f"Input {input_date} → t+1 | depth {depth:.2f} m | "
+            f"checkpoint epoch {checkpoint_epoch} | predictive mean μ"
         ),
-        xlabel="Longitudine (°)",
-        ylabel="Latitudine (°)",
+        xlabel="Longitude (°)",
+        ylabel="Latitude (°)",
     )
     mean_latitude = float(np.mean(latitudes))
     axis.set_aspect(1.0 / np.cos(np.deg2rad(mean_latitude)))
@@ -535,15 +535,15 @@ def plot_temperature_error(
     axis.set_facecolor("#d9d9d9")
 
     color_bar = figure.colorbar(mesh, ax=axis, pad=0.02)
-    color_bar.set_label("Errore: temperatura prevista − reale (°C)")
+    color_bar.set_label("Signed error: forecast − observation (°C)")
     axis.set(
         title=(
-            f"Errore della previsione di temperatura marina — {forecast_date}\n"
-            f"previsione − reale | input {input_date} → t+1 | "
-            f"profondità {depth:.2f} m | checkpoint epoca {checkpoint_epoch}"
+            f"Sea temperature forecast error — {forecast_date}\n"
+            f"forecast − observation | input {input_date} → t+1 | "
+            f"depth {depth:.2f} m | checkpoint epoch {checkpoint_epoch}"
         ),
-        xlabel="Longitudine (°)",
-        ylabel="Latitudine (°)",
+        xlabel="Longitude (°)",
+        ylabel="Latitude (°)",
     )
     mean_latitude = float(np.mean(latitudes))
     axis.set_aspect(1.0 / np.cos(np.deg2rad(mean_latitude)))

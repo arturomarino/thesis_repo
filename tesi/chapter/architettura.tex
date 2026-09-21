@@ -1,0 +1,289 @@
+\chapter{Implemented Architecture}
+\label{chap:architecture}
+
+\section{System Overview}
+
+The implemented system transforms a multi-year archive of daily ocean analyses into one-day-ahead probabilistic forecasts. The pipeline is deliberately modular: data access, physical-domain masking, temporal splitting, standardization, sample construction, neural inference, optimization, and evaluation are implemented as separate stages. This separation reduces the risk of data leakage and makes it possible to reproduce an inference run from a saved checkpoint without retraining the model.
+
+Figure~\ref{fig:implemented-pipeline} reports only the operations that are present in the source code. In particular, the preprocessing stage selects variables and applies the land--sea mask. It does not resample the grid, smooth the fields, or construct derived physical features. The probabilistic objective is a Gaussian negative log-likelihood combined with a weighted mean-squared-error term; the Continuous Ranked Probability Score is not used.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{implemented-pipeline.png}
+\caption{Implemented data and modelling pipeline. The diagram excludes operations that are not present in the implementation.}
+\label{fig:implemented-pipeline}
+\end{figure}
+
+The volumetric forecaster uses four variables: potential temperature, salinity, eastward velocity, and northward velocity. A fifth selected field, sea-surface height, is processed and standardized but remains outside the 3D network because it has no depth dimension. The implementation keeps this distinction explicit instead of repeating the same two-dimensional surface value at every depth level.
+
+\section{Dataset and Preprocessing}
+
+\subsection{Source Product and Extracted Domain}
+
+The experiments use daily mean fields derived from the Copernicus Marine GLORYS12 global ocean reanalysis, distributed as product \texttt{GLOBAL\_MULTIYEAR\_PHY\_001\_030} \citep{copernicusglorys12,lellouche2021glorys12}. GLORYS12 is an eddy-resolving global reanalysis with a native horizontal resolution of $1/12^{\circ}$ and 50 vertical levels. The NetCDF file used in this thesis is a coarser regional extraction. Consequently, the $0.25^{\circ}$ spacing reported below describes the local file supplied to the experiment and must not be confused with the native product resolution.
+
+The extracted array contains 2,191 daily time steps from 1 January 1994 through 31 December 1999. Its dimensions are
+
+\[
+(T,D,H,W)=(2191,46,65,171),
+\]
+
+where $T$ denotes time, $D$ depth, and $H$ and $W$ the latitude and longitude axes. Latitudes extend from $30.0^{\circ}$N to $46.0^{\circ}$N and longitudes from $6.0^{\circ}$W to $36.5^{\circ}$E, both with a $0.25^{\circ}$ step. The 46 retained depth levels are non-uniformly spaced, from approximately $0.506$~m to $947.448$~m. The rectangular bounds include the Mediterranean Sea together with adjacent ocean cells and land points; therefore, geographic bounds alone do not define the valid forecasting domain.
+
+Table~\ref{tab:dataset-variables} lists the fields selected by the preprocessing module. The first four have dimensions \texttt{(time, depth, latitude, longitude)} and form the input and target volumes. Sea-surface height has dimensions \texttt{(time, latitude, longitude)}. Other fields present in the original file, including mixed-layer depth and sea-ice variables, are not selected by the implemented preprocessing stage.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Variables selected from the Copernicus-derived NetCDF file. Units follow the product metadata.}
+\label{tab:dataset-variables}
+\begin{tabular}{llll}
+\toprule
+NetCDF name & Physical quantity & Unit & Use in 3D model \\
+\midrule
+\texttt{thetao\_cglo} & Potential temperature & $^{\circ}$C & Input and target \\
+\texttt{so\_cglo} & Sea-water salinity & $10^{-3}$ & Input and target \\
+\texttt{uo\_cglo} & Eastward velocity & m\,s$^{-1}$ & Input and target \\
+\texttt{vo\_cglo} & Northward velocity & m\,s$^{-1}$ & Input and target \\
+\texttt{zos\_cglo} & Sea-surface height & m & Processed, then excluded \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The input archive is opened with Xarray and Dask using chunks along the time dimension. This avoids loading approximately 2,191 full three-dimensional states into memory at once. Lazy access is especially important because each volumetric variable contains more than 1.2 billion grid values before masking. A sample is materialized only when requested by the PyTorch dataset. At that boundary, the selected Xarray slice is converted to a contiguous \texttt{float32} NumPy array and then to a PyTorch tensor.
+
+\subsection{Land--Sea Mask and Missing Values}
+
+The Mediterranean coastline, islands, and bathymetry create an irregular valid domain. The preprocessing module opens a stored land--sea mask and applies it to each selected field with Xarray's \texttt{where} operation. Invalid cells become \texttt{NaN} in the lazy dataset. When a sample is materialized, finite values generate a Boolean validity mask; the corresponding \texttt{NaN} values in the numerical tensor are replaced by zero. The loss and evaluation routines subsequently use the Boolean mask, so the inserted zeros do not contribute as artificial ocean observations.
+
+The target mask is applied independently at every output channel and depth. This is necessary because a geographic location can be valid near the surface and invalid below the local seabed. It also protects the objective from non-finite values. The loss implementation replaces invalid values before the exponential in the Gaussian likelihood, preventing masked extreme values from producing \texttt{NaN} gradients.
+
+\subsection{Depth-Dependent Standardization}
+
+The four target variables have different units and numerical ranges. Training directly on physical values would cause large-scale variables to dominate the gradient. The implementation therefore applies a $z$-score transformation. For a volumetric variable $c$ and depth level $d$, the statistics are
+
+\begin{align}
+\mu_{c,d} &= \operatorname{mean}_{t,\phi,\lambda} X_{c,t,d,\phi,\lambda},\\
+\sigma_{c,d} &= \operatorname{std}_{t,\phi,\lambda} X_{c,t,d,\phi,\lambda},
+\end{align}
+
+where the reductions cover time, latitude, and longitude while ignoring missing values. Depth is deliberately preserved. The normalized field is
+
+\[
+\widetilde{X}_{c,t,d,\phi,\lambda}
+=
+\frac{X_{c,t,d,\phi,\lambda}-\mu_{c,d}}
+{\sigma_{c,d}}.
+\]
+
+Thus, the implementation uses statistics specific to each depth level rather than one scalar mean and standard deviation per variable. This choice prevents the strong vertical gradient of temperature and other fields from being treated as random variation around a single global mean. For the two-dimensional sea-surface-height field, the reduction produces scalar statistics because no depth coordinate exists.
+
+All statistics are fitted exclusively on the 1994--1997 training split. The same stored values are then applied to validation and test data. The standard deviation is replaced by one only when it falls below a numerical threshold of $10^{-8}$. Saving the statistics in a separate NetCDF file ensures that inference performs exactly the same transformation and does not accidentally use information from later years.
+
+\subsection{Chronological Split}
+
+The dataset is divided chronologically:
+
+\begin{itemize}
+  \item training: 1 January 1994--31 December 1997, 1,461 daily states;
+  \item validation: 1 January--31 December 1998, 365 daily states;
+  \item test: 1 January--31 December 1999, 365 daily states.
+\end{itemize}
+
+A random split would allow very similar consecutive states to appear in different subsets and would yield an unrealistically favourable estimate of generalization. The chronological organization instead emulates the intended use: prediction of future states from an archive that contains only earlier years. The DataLoader construction also checks that timestamps do not overlap between splits.
+
+\subsection{Forecast Sample Construction}
+
+Each supervised sample uses three consecutive daily states as context and the following state as target:
+
+\[
+[X_{t-2},X_{t-1},X_t] \longmapsto X_{t+1}.
+\]
+
+Each state contains the four volumetric variables. Concatenating three states along the channel axis produces 12 input channels, while the target contains four channels. After batching, the tensor layout is
+
+\[
+[B,C,D,H,W],
+\]
+
+with input shape $[B,12,46,65,171]$ and target shape $[B,4,46,65,171]$. This notation describes the role of each axis once; the actual dimensions are used again in Table~\ref{tab:architecture-layers} only to document how the network transforms them.
+
+Because each sample needs three context days and one target day, the splits contain 1,458 training pairs, 362 validation pairs, and 362 test pairs. The first validation and test targets are constructed entirely inside their respective yearly split. This discards the final context days of the preceding year but makes the separation rule unambiguous.
+
+\section{Probabilistic 3D U-Net}
+
+\subsection{Encoder--Decoder Structure}
+
+The forecaster is a compact three-dimensional U-Net. Every convolutional block contains two $3\times3\times3$ convolutions with unit padding and a GELU activation after each convolution. Unit padding preserves depth, latitude, and longitude inside a block. The encoder progressively enlarges the receptive field through two \texttt{MaxPool3D} operations with kernel and stride equal to two. Channel capacity increases from 8 to 16 and then to 32 latent channels.
+
+The decoder restores the exact resolution of the corresponding encoder feature map through trilinear interpolation. Interpolation targets the stored skip-connection shape rather than assuming that every axis is divisible by two. This detail is required for the $46\times65\times171$ grid, whose latitude and longitude sizes are odd. The upsampled features are concatenated with the encoder features, and a two-convolution block fuses the result.
+
+Two independent $1\times1\times1$ projections transform the final eight features into four output channels. The first predicts the normalized conditional mean $\mu$; the second predicts the log-variance $s=\log\sigma^2$. The log-variance projection is initialized with zero weights and biases, corresponding to an initial normalized variance of one. Predicting the logarithm avoids a direct positivity constraint on the raw network output, while the standard deviation used during evaluation is recovered as $\sigma=\exp(s/2)$.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Layer sequence and tensor shapes for the final network. Batch size is omitted from the shapes.}
+\label{tab:architecture-layers}
+\begin{tabular}{p{2.5cm}p{4.2cm}p{3.2cm}r}
+\toprule
+Stage & Operation & Output shape & Parameters \\
+\midrule
+Input & Three days, four variables & $12\times46\times65\times171$ & 0 \\
+Encoder 1 & Two $3^3$ convolutions, GELU & $8\times46\times65\times171$ & 4,336 \\
+Encoder 2 & MaxPool3D, two convolutions & $16\times23\times32\times85$ & 10,400 \\
+Latent block & MaxPool3D, two convolutions & $32\times11\times16\times42$ & 41,536 \\
+Decoder 2 & Trilinear upsample, skip, convolutions & $16\times23\times32\times85$ & 27,680 \\
+Decoder 1 & Trilinear upsample, skip, convolutions & $8\times46\times65\times171$ & 6,928 \\
+Mean head & $1\times1\times1$ convolution & $4\times46\times65\times171$ & 36 \\
+Log-variance head & $1\times1\times1$ convolution & $4\times46\times65\times171$ & 36 \\
+\midrule
+Total & & & \textbf{90,952} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The final configuration does not include instance normalization inside the convolutional blocks. The inputs are already standardized with training statistics specific to each variable and depth. Additional instance normalization would recompute statistics for every sample and channel and could suppress changes in absolute field level that are physically meaningful for forecasting. Its absence is therefore a documented model choice rather than an omitted preprocessing step.
+
+\subsection{Design Rationale and Computational Cost}
+
+The use of 3D rather than 2D convolutions is motivated by the vertical structure of the target. A two-dimensional network could treat depth levels as channels, but then each kernel would mix all levels through channel weights while translating only in latitude and longitude. The meaning of depth adjacency would be implicit and fixed at the first layer. In the adopted formulation, a $3\times3\times3$ kernel moves explicitly through depth and can build progressively larger vertical features. The same operation is shared across the water column, which provides a stronger inductive bias for local vertical continuity.
+
+The four physical variables are concatenated as channels because they are defined on the same depth and horizontal coordinates. A convolution can therefore learn joint features such as a temperature--salinity structure accompanied by a velocity pattern. Standardizing each variable and depth before concatenation is critical: without it, salinity and temperature magnitudes would differ markedly from current velocities and would determine the scale of early-layer activations.
+
+The model contains only two downsampling stages. Deeper compression would enlarge the receptive field but would reduce the already modest vertical dimension from 46 levels and make reconstruction of shallow coastal structure more difficult. Two stages yield a latent grid of $11\times16\times42$, preserving an explicit three-dimensional representation. The 32 latent feature channels provide capacity for joint ocean patterns while keeping the parameter count and activations manageable in a Colab session.
+
+One unbatched input tensor contains
+
+\[
+12\times46\times65\times171=6{,}134{,}760
+\]
+
+single-precision values, or approximately 23.4~MiB before masks and intermediate activations. The four-channel target requires approximately 7.8~MiB, and the mean and log-variance outputs together require about 15.6~MiB. Training memory is substantially higher because encoder features, decoder features, gradients, and AdamW moment estimates must also be retained. These values explain the conservative batch size of one even though the network has fewer than one hundred thousand parameters: activation memory, not parameter memory, dominates this dense volumetric task.
+
+The two output heads share the complete encoder and decoder. This reduces cost and lets the variance estimate depend on the same features used for the mean. It can also couple their errors: if the shared representation omits a relevant process, both heads must compensate from the same limited information. A larger future system could use a wider variance head, but such complexity should be introduced only after the deterministic mean surpasses the reference baseline.
+
+\subsection{What the Output Distribution Represents}
+
+Conditioned on the three input states, the model assumes a factorized Gaussian distribution over all valid target elements:
+
+\[
+p(Y\mid X)=\prod_{i\in\Omega}
+\mathcal{N}(y_i;\mu_i,\sigma_i^2),
+\]
+
+where $\Omega$ is the set of ocean cells selected by the target mask. Both $\mu_i$ and $\sigma_i$ vary with variable, depth, and horizontal position, so the distribution is heteroscedastic. The factorization means that the likelihood does not contain an explicit covariance between adjacent locations, depths, or variables. Convolutions allow the predicted parameters to depend on a local three-dimensional context, but the probability model itself still treats output residuals as conditionally independent.
+
+This distinction limits the interpretation of uncertainty. The predicted standard deviation expresses residual uncertainty learned from the training data under a fixed architecture and fixed parameters. It does not by itself measure epistemic uncertainty about the weights, nor does it define spatially coherent alternative ocean states. Ensembles, Bayesian approximations, or generative models would be required to address those aspects.
+
+\section{Training Objective}
+
+\subsection{Masked Gaussian Negative Log-Likelihood}
+
+The objective uses the Gaussian logarithmic score, a proper scoring rule \citep{gneiting2007scoring}. For each valid normalized target $y_i$, mean prediction $\mu_i$, and predicted log-variance $s_i$, the implemented negative log-likelihood is
+
+\[
+\mathcal{L}_{\mathrm{NLL}}
+=\frac{1}{|\Omega|}\sum_{i\in\Omega}
+\frac{1}{2}\left[(y_i-\mu_i)^2\exp(-s_i)+s_i\right].
+\]
+
+The constant $\tfrac{1}{2}\log(2\pi)$ is omitted because it does not alter the optimizer. The first term penalizes the squared residual relative to the predicted variance. A model cannot reduce this term simply by predicting a very large variance because the second term grows with $s_i$. Conversely, predicting a variance that is too small makes errors expensive through $\exp(-s_i)$. The objective therefore trains the two output heads jointly.
+
+Masking is part of the definition of the loss. Only elements in $\Omega$ enter the sum and its denominator. This is different from averaging over a rectangular tensor after setting land values to zero, which would reward the model for predicting artificial zeros over a large portion of the domain.
+
+\subsection{Weighted Mean Error Term}
+
+Preliminary configurations optimized the likelihood but did not always reduce the mean forecast error sufficiently. The final objective therefore adds a masked channel-weighted mean-squared error:
+
+\[
+\mathcal{L}_{\mathrm{MSE}}
+=
+\frac{
+\sum_{i\in\Omega} w_{c(i)}(y_i-\mu_i)^2
+}{
+\sum_{i\in\Omega} w_{c(i)}
+},
+\qquad
+w_c=
+\begin{cases}
+2,& c=\text{temperature},\\
+1,& \text{otherwise}.
+\end{cases}
+\]
+
+The complete optimization objective is
+
+\[
+\mathcal{L}=\mathcal{L}_{\mathrm{NLL}}+2\,\mathcal{L}_{\mathrm{MSE}}.
+\]
+
+The coefficient of the auxiliary MSE and the internal temperature weight are both 2.0 in the final run. They play different roles: the first controls the balance between distribution fitting and mean accuracy, whereas the second gives temperature twice the relative contribution of each other channel inside the MSE term. Metrics reported after an epoch remain unweighted aggregate errors unless explicitly identified as temperature-only physical metrics.
+
+\section{Training Procedure}
+
+\subsection{Data Loading and Device Transfer}
+
+Training uses a batch size of one and zero worker processes. These conservative settings avoid several NetCDF files being read concurrently and bound the memory needed for a $12\times46\times65\times171$ input. The training DataLoader shuffles sample order at the start of each epoch, whereas validation and test loaders retain chronological order. CUDA pinned memory is enabled when a CUDA device is selected. Each input volume, target volume, and target mask is transferred to the device immediately before the forward pass.
+
+One optimization epoch follows this sequence for every batch:
+
+\begin{enumerate}
+  \item clear the AdamW gradients with \texttt{set\_to\_none=True};
+  \item compute the mean and log-variance through the 3D U-Net;
+  \item compute the masked Gaussian NLL and weighted MSE;
+  \item backpropagate their combined objective;
+  \item clip the global gradient norm to 1.0;
+  \item update the parameters with AdamW.
+\end{enumerate}
+
+After the optimization pass, the code evaluates the complete training split again with fixed end-of-epoch weights. This second pass is intentional: metrics accumulated while weights are changing cannot be compared directly with validation metrics computed from one fixed model. A no-gradient pass is then performed over validation. RMSE, MAE, NLL, predicted standard deviation, interval coverage, and skill relative to persistence are accumulated from valid points only.
+
+\subsection{Optimizer, Checkpoints, and Reproducibility}
+
+The final checkpoint records an AdamW learning rate of $10^{-4}$ and weight decay of $10^{-4}$ \citep{loshchilov2019adamw}, with $\beta_1=0.9$, $\beta_2=0.999$, and $\epsilon=10^{-8}$. No learning-rate scheduler is used. The random seed exposed by the training command defaults to 42. The maximum epoch and early-stopping patience actually passed to the historical command were not stored in the checkpoint; reporting the current command-line defaults as historical values would therefore be unjustified.
+
+Two checkpoint files serve different purposes. The \emph{best} file is overwritten whenever validation RMSE improves. The \emph{last} file is written after every epoch and stores model weights, optimizer state, metric history, best epoch, and the number of consecutive epochs without improvement. A resumed training command loads the last file and checks that model dimensions, context length, and loss weights agree with the saved configuration before continuing.
+
+The final run completed 96 epochs. Its best validation RMSE occurred at epoch 94, and the last checkpoint records two subsequent epochs without improvement. This does not reveal the configured patience, but it proves that model selection and the final experimental evaluation use epoch 94 rather than epoch 96.
+
+\subsection{Hyperparameter Refinement}
+
+Three preserved checkpoint families document the progressive enlargement of temporal context and network capacity. Table~\ref{tab:checkpoint-comparison} reports only fields recovered from the checkpoint files. The v1 checkpoint does not contain a validation-RMSE field, so its selection statistic is not directly comparable with the later runs. The value labelled ``minimum NLL in history'' is also not necessarily the NLL at the RMSE-selected epoch: the code tracks the lowest NLL over all completed epochs while choosing the best checkpoint by RMSE.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Verified checkpoint configurations used during model refinement.}
+\label{tab:checkpoint-comparison}
+\begin{tabular}{lrrrrrr}
+\toprule
+Run & Context & Input ch. & Base ch. & Latent ch. & Best epoch & Val. RMSE \\
+\midrule
+v1 & 1 & 4 & 4 & 8 & 66 & unavailable \\
+v2 fast & 2 & 8 & 8 & 32 & 28 & 0.208207 \\
+v3 final & 3 & 12 & 8 & 32 & 94 & 0.178346 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The sequence shows that the final configuration combines three days of context with the larger 8--16--32 feature hierarchy. The observed validation RMSE decreases from v2 to v3. This comparison does not isolate a single causal hyperparameter because context length and earlier configuration choices changed between runs; it documents empirical refinement rather than a controlled ablation study.
+
+\section{Learning Curves}
+
+Figure~\ref{fig:learning-curves} contains the complete history of the final run. Only one copy is retained in the thesis. Both training and validation NLL decrease rapidly during the first epochs and then continue with marked short-term fluctuations. The validation RMSE falls from approximately 0.358 at epoch 1 to 0.178 at epoch 94. Training and validation curves remain close, providing no evidence of a large classical generalization gap between the first four years and 1998.
+
+The more consequential observation is the comparison with persistence. Although neural RMSE improves throughout training, the horizontal validation-persistence level remains lower. The checkpoint at epoch 94 is therefore the best neural configuration according to the chosen selection rule, yet it does not outperform the one-day persistence forecast. Chapter~\ref{chap:evaluation} quantifies this result on both validation and test data.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.96\textwidth]{learning-curve-english.png}
+\caption{Gaussian NLL and normalized RMSE over the 96 completed epochs. Training metrics are recomputed with fixed end-of-epoch weights. Dotted lines show the persistence RMSE, and the marker identifies the RMSE-selected checkpoint at epoch 94.}
+\label{fig:learning-curves}
+\end{figure}
+
+\section{Hardware, Software, and Runtime}
+
+Training and inference were executed in Google Colab with CUDA acceleration. The checkpoint proves that 96 epochs were completed, including resumed sessions, but it does not store a GPU identifier, memory size, per-epoch timing, or accumulated wall-clock duration. The image files produced during development span multiple Colab sessions; their filesystem dates cannot be interpreted as continuous compute time. Consequently, the exact historical training GPU and total training time are unavailable and are not reconstructed from the currently assigned Colab hardware.
+
+For reproducibility, a later audit of the notebook environment recorded Python 3.13.15, PyTorch 2.11.0 compiled for CUDA 12.8, Xarray 2025.12.0, and Dask 2026.1.1. That audit session was assigned an NVIDIA A100-SXM4-40GB with approximately 39.5~GiB of memory. These values describe the environment used to re-run inference and inspect checkpoints; they are not evidence that the same GPU or package versions were used for every historical training epoch. Future runs should write this metadata and elapsed time into the last checkpoint at every session boundary.

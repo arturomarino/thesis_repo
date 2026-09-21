@@ -1,0 +1,34 @@
+\chapter{Introduction}
+\label{chap:introduction}
+
+\section{Background and Problem Statement}
+
+Ocean forecasting is a central problem in environmental modelling, with direct relevance to climate analysis, marine safety, ecosystem monitoring, and the management of coastal and offshore activities. The ocean state evolves through coupled physical processes that act across a wide range of spatial and temporal scales. Temperature, salinity, sea level, and horizontal currents are not independent quantities: their interactions determine density gradients, circulation, stratification, and the transport of heat and matter. A forecast must therefore represent both horizontal variability and changes along the water column.
+
+Operational ocean forecasting systems are primarily based on numerical models that discretize and integrate the governing equations of ocean dynamics. These systems provide physically consistent predictions and remain essential in scientific and operational settings. Their use, however, requires substantial computational resources, carefully specified surface and lateral boundary conditions, and data-assimilation procedures that combine models with observations. These requirements motivate research into data-driven approaches that learn predictive relationships directly from historical ocean states and can produce forecasts at a lower inference cost.
+
+Deep learning has recently achieved important results in geophysical forecasting \citep{bi2023pangu,lam2023graphcast}. Neural networks can learn complex spatio-temporal relationships from large reanalysis archives, while convolutional and encoder--decoder architectures are naturally suited to gridded fields. Applying these methods to the ocean remains difficult \citep{epicoco2026medformer}. Coastlines create irregular boundaries inside a rectangular grid, bathymetry changes the valid domain with depth, observations below the surface are comparatively sparse, and the short-term evolution can be much smaller than the absolute value of the state being predicted. At a one-day horizon, the simple persistence forecast---copying the last observed state---is consequently a demanding baseline.
+
+This thesis investigates short-term, three-dimensional ocean-state forecasting over the Mediterranean region using a probabilistic neural network. The implemented model is a compact 3D U-Net trained on a Copernicus Marine GLORYS12-derived NetCDF subset \citep{copernicusglorys12,lellouche2021glorys12}. It receives three consecutive daily states and predicts the following daily state for potential temperature, salinity, and the two horizontal current components. In addition to a predictive mean, the network estimates a spatially varying Gaussian variance. The resulting system can therefore be evaluated both as a deterministic forecaster and as a model of conditional predictive uncertainty.
+
+\section{Thesis Objectives}
+
+The main objective is to design, implement, and evaluate a reproducible deep-learning pipeline for probabilistic ocean forecasting. The work covers the complete experimental path from large NetCDF files to quantitative validation. Its specific objectives are:
+
+\begin{itemize}
+  \item to load and preprocess Copernicus Marine data with Xarray and Dask while avoiding the materialization of the complete archive in memory;
+  \item to represent temperature, salinity, eastward velocity, and northward velocity as multi-channel three-dimensional PyTorch tensors;
+  \item to construct temporally ordered supervised samples without leakage between training, validation, and test years;
+  \item to implement a 3D U-Net that predicts the mean and log-variance of the next ocean state;
+  \item to train the network with a masked probabilistic objective that excludes land and missing values;
+  \item to quantify deterministic accuracy, forecast skill relative to persistence, and the empirical coverage of the predicted uncertainty intervals;
+  \item to identify the main limitations of the resulting model and define technically justified directions for future development.
+\end{itemize}
+
+The sea-surface-height field is retained by the preprocessing pipeline but is not used by the volumetric forecaster. It is two-dimensional, whereas the selected temperature, salinity, and velocity variables are defined over depth. Replicating the surface field along the vertical dimension would create artificial information; a multi-branch architecture would be required to integrate it consistently.
+
+The intended contribution is an experimentally traceable research prototype rather than a complete operational forecasting service. Particular attention is given to the choices that affect the interpretation of the results: chronological splitting, depth-dependent normalization, masking, checkpoint selection, comparison with persistence, and separation between deterministic error and probabilistic coverage.
+
+\section{Thesis Structure}
+
+Chapter~\ref{chap:state-of-art} reviews artificial-intelligence methods for atmospheric and ocean forecasting, including deterministic, ensemble, and generative approaches. Chapter~\ref{chap:architecture} describes the dataset, preprocessing, network architecture, loss function, training loop, and computational configuration. Chapter~\ref{chap:evaluation} presents the inference protocol, metrics, quantitative results, maps, and uncertainty diagnostics. Chapter~\ref{chap:conclusions} relates the experimental evidence to the initial objectives and discusses limitations and future developments.

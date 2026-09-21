@@ -103,7 +103,7 @@ def plot_learning_curve(
         linewidth=2,
         marker="o",
         markersize=3,
-        label="Training RMSE (pesi fissi)",
+        label="Training RMSE (fixed weights)",
     )
     rmse_axis.plot(
         epochs,
@@ -148,16 +148,16 @@ def plot_learning_curve(
         linewidth=1,
         s=70,
         zorder=3,
-        label=f"Best validation (epoca {epochs[best_index]})",
+        label=f"Best validation (epoch {epochs[best_index]})",
     )
     rmse_axis.set(
-        xlabel="Epoca",
-        ylabel="RMSE normalizzato",
+        xlabel="Epoch",
+        ylabel="Normalized RMSE",
     )
     rmse_axis.grid(True, alpha=0.25)
     rmse_axis.legend()
     rmse_axis.set_xlim(left=0, right=max(1, epochs[-1]))
-    figure.suptitle("Curve di apprendimento e confronto persistence")
+    figure.suptitle("Learning curves and persistence comparison")
     figure.tight_layout()
     figure.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(figure)

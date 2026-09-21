@@ -1,0 +1,143 @@
+\chapter{State of the Art}
+\label{chap:state-of-art}
+
+\section{From Numerical Models to Data-Driven Forecasting}
+
+Atmospheric and ocean forecasting have traditionally been formulated as initial-value problems governed by systems of partial differential equations. Numerical prediction systems discretize those equations over a grid, estimate an initial state through data assimilation, and integrate the state forward in time. Their principal strength is physical consistency: conservation laws and parameterized physical processes constrain the evolution. Their principal cost is computational. Operational forecasts require large computing systems, repeated assimilation cycles, and ensembles when uncertainty must be quantified.
+
+Machine-learning forecasting follows a different route. A model is trained on archives of consecutive geophysical states and learns an approximation of the time-evolution operator. Once trained, inference consists mainly of tensor operations and can be much faster than a numerical integration. The learned mapping, however, is determined by the training distribution and objective. It may violate physical relationships, smooth small-scale structures, or accumulate errors when applied autoregressively. For this reason, comparisons with strong numerical or statistical baselines and temporally independent test periods are essential.
+
+Reanalysis products have enabled much of the recent progress. A reanalysis combines a numerical model with historical observations to generate a spatially and temporally consistent record. It supplies the dense gridded targets required by supervised learning, but it is not identical to direct observation. A neural forecast trained and evaluated against reanalysis therefore learns to emulate the reanalysis state and inherits part of its uncertainty and bias. Independent observations remain valuable for operational validation, as illustrated by recent regional ocean systems.
+
+\section{Artificial Intelligence for Atmospheric Forecasting}
+
+The atmosphere has provided the most visible demonstrations of global data-driven forecasting. Large reanalysis archives, regular pressure-level representations, and established benchmarks make it possible to train and compare high-capacity models over many variables and lead times.
+
+\subsection{FourCastNet}
+
+FourCastNet introduced a global high-resolution weather model based on Adaptive Fourier Neural Operators. Rather than relying exclusively on local convolutional kernels, the architecture performs part of its computation in spectral space, allowing long-range spatial interactions to be represented efficiently. The model was trained on ERA5 fields at a horizontal resolution of $0.25^{\circ}$ and applied autoregressively to short- and medium-range forecasts \citep{pathak2022fourcastnet}. Its results showed that a neural model can produce global forecasts rapidly enough to support large ensembles.
+
+FourCastNet is relevant to ocean forecasting for two reasons. First, it treats prediction as the learning of an evolution operator over gridded physical fields. Second, its autoregressive use highlights the difference between one-step accuracy and long-horizon stability. A small one-step bias can grow over repeated applications, so evaluation must consider the intended forecast horizon rather than assuming that a good single step guarantees a stable trajectory.
+
+\subsection{Pangu-Weather}
+
+Pangu-Weather introduced a three-dimensional Earth-specific transformer that represents pressure levels as an explicit spatial dimension. The model combines this representation with a hierarchical temporal aggregation strategy based on networks trained for different lead-time increments \citep{bi2023pangu}. The three-dimensional formulation is particularly relevant to this thesis because it preserves interactions between vertical levels instead of processing each level as an unrelated two-dimensional map.
+
+The result also illustrates the importance of inductive bias. Atmospheric grids are structured but not equivalent to ordinary images: latitude, longitude, and vertical level have different physical meanings. Pangu-Weather incorporates these distinctions in its architecture. The present work uses a much smaller convolutional model, but it follows the same broad principle by processing depth jointly with the two horizontal dimensions.
+
+\subsection{GraphCast}
+
+GraphCast represents the atmosphere on a multi-scale graph and learns message-passing operations between grid points and graph nodes. It predicts global states autoregressively and was evaluated against the ECMWF deterministic high-resolution system over a large set of variables and lead times \citep{lam2023graphcast}. The graph representation permits information to travel efficiently over long distances while retaining a mapping to the regular latitude--longitude grid.
+
+GraphCast demonstrates that model architecture, training data, and evaluation protocol must be considered together. Its scale and global context differ greatly from the regional experiment in this thesis, yet its validation principles remain applicable: the test period must be temporally separated, the baseline must be competitive, and performance must be reported across variables rather than through a single visually convincing case.
+
+\subsection{Probabilistic Atmospheric Models}
+
+Most early neural weather models produced a single deterministic trajectory. This is insufficient when multiple future states are plausible. GenCast addresses this limitation with a conditional diffusion model that generates an ensemble of global weather trajectories. It produces 15-day forecasts at $0.25^{\circ}$ resolution and evaluates the resulting joint distribution rather than only an ensemble mean \citep{price2024gencast}. This distinction is important: a distribution over coherent fields contains spatial and temporal dependencies that cannot be recovered from independent pointwise variances alone.
+
+The probabilistic formulation used in this thesis is more limited. It predicts the parameters of a Gaussian distribution independently at every output location and variable. This provides a tractable uncertainty estimate and supports likelihood-based training, but it does not generate spatially coherent alternative ocean evolutions. GenCast therefore represents a possible long-term direction rather than a feature of the implemented system.
+
+\section{Artificial Intelligence for Ocean Forecasting}
+
+Transferring data-driven forecasting from the atmosphere to the ocean is not direct. The ocean evolves more slowly, has an irregular wet domain that changes with depth, and is strongly constrained by bathymetry, coastlines, narrow straits, surface fluxes, and lateral boundary conditions. Subsurface observations are sparse compared with atmospheric observations, and reanalysis fields may reflect changes in the observing network. At short lead times, gradual evolution also makes persistence difficult to outperform.
+
+Ocean models can be grouped by domain and forecast scale. Global systems learn basin-to-basin interactions and require very large training sets. Regional systems can devote capacity to a specific circulation regime and use higher resolution, but they depend more strongly on the treatment of lateral boundaries. Surface-only systems reduce dimensionality, while three-dimensional systems attempt to represent stratification and the coupling between surface and subsurface dynamics.
+
+\subsection{OceanNet and XiHe}
+
+OceanNet is a regional neural-operator approach for ocean circulation. It combines a Fourier neural operator with a predictor--evaluate--corrector integration strategy and a spectral regularizer intended to reduce small-scale spectral bias. Its experiments focus on sea-surface-height evolution in energetic western-boundary-current regions \citep{chattopadhyay2023oceannet}. The work shows how neural operators can support long integrations, although a surface variable alone does not represent the complete three-dimensional ocean state.
+
+XiHe extends data-driven forecasting to a global, eddy-resolving ocean configuration. It is trained on GLORYS12 reanalysis data and uses a hierarchical transformer architecture to forecast multiple ocean variables on a $1/12^{\circ}$ grid \citep{wang2024xihe}. Compared with a compact regional U-Net, XiHe benefits from a much larger archive, broader spatial context, and substantially greater model capacity. Its use of an explicit ocean mask and a three-dimensional dataset nevertheless addresses several of the same representation problems encountered in this thesis.
+
+\subsection{Mediterranean Forecasting and MedFormer}
+
+The Mediterranean Sea is a demanding regional domain. Its circulation is affected by complex coastlines, strong mesoscale activity, exchanges through narrow straits, and interactions between surface forcing and vertical stratification. A rectangular data array contains a large fraction of land cells and also includes boundary regions outside the basin, making masking and domain definition important.
+
+MedFormer is a fully data-driven system developed specifically for medium-range forecasting in the Mediterranean Sea. Its architecture combines a U-Net with three-dimensional attention mechanisms. It operates at $1/24^{\circ}$ horizontal resolution, is pretrained on a long reanalysis archive, fine-tuned with operational analyses, and produces nine-day forecasts autoregressively. Historical ocean states are combined with atmospheric forcing, and evaluation includes comparison with the operational Mediterranean Forecasting System and independent observations \citep{epicoco2026medformer}.
+
+MedFormer is the closest methodological reference for the present thesis, but the two systems have different aims. MedFormer targets operational medium-range performance at high resolution. The implemented 3D U-Net is a compact research prototype trained on a six-year subset, uses only four ocean variables, predicts one day ahead, and represents uncertainty with pointwise Gaussian parameters. This narrower design makes the complete pipeline manageable within the available computational resources and exposes the effects of masking, normalization, loss construction, and baseline choice.
+
+\section{Architectural Families for Gridded Geophysical Data}
+
+The models reviewed above use markedly different internal representations. This is more than an implementation detail: an architecture determines how information travels across space, how resolution affects cost, and which physical structures are easy or difficult to represent. Four broad families are relevant to the present work.
+
+\subsection{Convolutional Encoder--Decoder Networks}
+
+Convolutional networks apply shared local filters across a grid. Weight sharing makes them comparatively parameter-efficient, and a hierarchy of downsampling operations increases the receptive field without applying a large kernel at full resolution. Encoder--decoder networks then recover the original grid size, while skip connections transfer fine-scale information around the compressed representation. The U-Net design was introduced for image segmentation, where output localization is as important as global context \citep{ronneberger2015unet}. Its three-dimensional extension replaces planar operations with volumetric convolutions and was originally proposed for dense volumetric segmentation \citep{cicek20163dunet}.
+
+Those properties transfer naturally to ocean forecasting. Temperature, salinity, and velocity are defined on a common grid, and a dense output is required for every wet cell. Three-dimensional kernels can combine neighbouring depths with horizontal information and therefore offer a direct way to represent stratification. Skip connections can preserve coastline and frontal detail that might otherwise be lost in the latent representation.
+
+Convolutional U-Nets also have limits. Their translation-equivariant filters do not know that the same local pattern has a different meaning near Gibraltar, in the Adriatic Sea, or in the open eastern Mediterranean unless coordinates or static fields are supplied. Their receptive field grows only with depth, kernel size, and downsampling. Long-range teleconnections or basin-scale pressure gradients may therefore require a deeper network, attention, or operator-based components. Pooling can also smooth energetic small-scale structures, particularly when the target is a conditional mean.
+
+\subsection{Neural Operators}
+
+Neural operators aim to learn mappings between functions rather than mappings tied to one finite vector representation. Fourier neural operators transform fields into spectral space, modify a truncated set of modes, and return to physical space \citep{li2021fno}. A spectral layer can transmit information globally in a small number of operations, which motivated its use in FourCastNet and OceanNet.
+
+For geophysical forecasting, global mixing is attractive because large-scale structures span many grid cells. At the same time, truncating high-frequency modes may reduce sharp fronts, coastally trapped signals, or energetic eddies. Irregular ocean masks also complicate the meaning of a global Fourier basis: discontinuities at land boundaries can create spectral artefacts. Hybrid designs can combine spectral processing for large scales with local convolutions or correction terms for smaller scales.
+
+\subsection{Transformers and Attention}
+
+Attention allows each representation element to combine information from other elements with data-dependent weights. A fully global attention matrix over a three-dimensional ocean grid is prohibitively large, so practical systems use windows, hierarchies, factorization, or sparse neighbourhoods. Pangu-Weather and XiHe use hierarchical designs, while MedFormer introduces 3D attention inside a regional encoder--decoder structure.
+
+Compared with a fixed convolutional kernel, attention can adapt its spatial relationships to the current state. It may connect distant regions or depths when their features are relevant to the forecast. Its cost and data requirements are higher, however, and positional information must be encoded carefully. In a small six-year experiment, a compact convolutional baseline is useful before introducing a larger attention module because it separates limitations caused by data and objective from those caused by insufficient architectural capacity.
+
+\subsection{Graph and Mesh Representations}
+
+Graph networks replace rectangular neighbourhoods with an explicit connectivity structure. GraphCast maps regular atmospheric fields to a multi-resolution spherical mesh, performs message passing, and maps the result back to the grid. For the ocean, a graph can in principle exclude land connections, follow an unstructured coastal mesh, and represent narrow passages more faithfully than a rectangular convolution.
+
+This flexibility introduces additional design decisions. Nodes, edges, distances, bathymetry, and the relation between depth levels must be specified, while efficient batching and interpolation become more complex. A graph is therefore attractive for a future physically informed model but is outside the scope of the implemented regular-grid pipeline.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Representative data-driven geophysical forecasting systems. Resolutions and horizons refer to the configurations reported in the cited publications.}
+\label{tab:state-of-art-models}
+\begin{tabular}{p{2.2cm}p{2.2cm}p{3.1cm}p{2.1cm}p{2.2cm}}
+\toprule
+Model & Domain & Main architecture & Resolution & Output type \\
+\midrule
+FourCastNet & Global atmosphere & Adaptive Fourier neural operator & $0.25^{\circ}$ & Deterministic; ensembles through perturbed inputs \\
+Pangu-Weather & Global atmosphere & 3D Earth-specific transformer & $0.25^{\circ}$ & Deterministic \\
+GraphCast & Global atmosphere & Multi-scale graph neural network & $0.25^{\circ}$ & Deterministic \\
+GenCast & Global atmosphere & Conditional diffusion model & $0.25^{\circ}$ & Probabilistic ensemble \\
+OceanNet & Regional ocean & Fourier neural operator with correction step & Regional configuration & Deterministic autoregressive \\
+XiHe & Global ocean & Hierarchical transformer & $1/12^{\circ}$ & Deterministic \\
+MedFormer & Mediterranean Sea & U-Net with 3D attention & $1/24^{\circ}$ & Deterministic autoregressive \\
+This thesis & Mediterranean subset & Compact probabilistic 3D U-Net & $0.25^{\circ}$ local grid & Pointwise Gaussian \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Global and Regional Forecasting Strategies}
+
+Global and regional models solve related but distinct problems. A global ocean model avoids artificial lateral boundaries and can learn connections between basins. It also requires a vast grid, substantial model capacity, and a long archive to represent the diversity of global regimes. XiHe follows this strategy at eddy-resolving resolution. Global atmospheric systems benefit similarly from complete spherical context, although they must handle the pole and periodic longitude explicitly.
+
+A regional model restricts computation to a chosen area and can allocate more resolution or model capacity to that domain. It can learn recurring structures specific to the region, and its smaller tensor size makes experiments feasible on limited hardware. The disadvantage is incomplete physical context. Water, heat, and momentum cross the open boundary, and their future values are not determined solely by the internal regional state. The rectangular subset used in this thesis includes an Atlantic sector west of Gibraltar, which provides some context for the Mediterranean exchange, but it does not supply explicit time-dependent boundary forcing.
+
+The distinction also affects evaluation. A global average can hide large regional errors, while a regional average can be dominated by one sub-basin or by the distribution of wet cells with depth. Results should therefore identify the domain, mask, and aggregation dimensions. Comparisons between models at different resolutions or domains cannot be reduced to one RMSE without accounting for their variables, targets, lead times, and reference datasets.
+
+Another difference concerns operational inputs. A research experiment commonly starts from consecutive reanalysis states. An operational forecast starts from an analysis available in near real time and also receives future atmospheric forcing and boundary conditions. MedFormer includes atmospheric predictors and operational fine-tuning, whereas the present model uses ocean history only. This gap is central when interpreting performance: the compact model is evaluated as a controlled emulator of one-day reanalysis evolution, not as a replacement for a complete operational chain.
+
+\section{Evaluation Practices in Geophysical Forecasting}
+
+Forecast evaluation must match the intended use. One-step training loss alone is not an adequate performance report. Deterministic models are commonly assessed with RMSE, MAE, anomaly correlation, spectral diagnostics, and variable-specific physical errors. Probabilistic models require proper scores and calibration diagnostics \citep{gneiting2007scoring}. Autoregressive models also need error as a function of lead time because small one-step errors can compound into unstable trajectories.
+
+Baselines are equally important. Climatology tests whether a model uses the current state, while persistence tests whether it predicts change beyond the latest observation. Numerical operational systems provide a much stronger reference but may not be available on exactly the same grid and dates. At one day, persistence is especially competitive in the ocean. At longer horizons it gradually loses skill, so the ranking of two methods can depend on forecast lead time.
+
+Masks and weighting can change the meaning of an aggregate score. A simple mean over all depth cells gives greater influence to levels and regions with more valid points. Area weighting is required on a latitude--longitude grid when cells represent different surface areas, and volume weighting would additionally account for vertical layer thickness. The evaluator in this thesis masks invalid points but does not apply cell-area or layer-thickness weights. Its aggregate metric is therefore a pointwise grid average in standardized space. This is sufficient for internally consistent checkpoint comparison, but it is not a volume-integrated physical error.
+
+Finally, reanalysis-based evaluation measures agreement with a model-assimilation product, not direct truth. Independent profiles, satellite products, drifters, floats, and tide gauges can expose biases shared by the training and target reanalysis. MedFormer demonstrates the value of including observation-based verification in a regional system. Such data are outside the current experiment, so the claims in this thesis are limited to forecasting the supplied Copernicus-derived fields.
+
+\section{Probabilistic Forecasting and Predictive Uncertainty}
+
+A deterministic model estimates one future field, commonly interpreted as a conditional mean. It cannot describe whether a forecast is associated with low or high uncertainty. Ensemble methods instead generate several plausible trajectories, while parametric methods predict the parameters of a chosen probability distribution. Generative models can represent more complex, multimodal distributions at a higher computational and methodological cost.
+
+The implemented network follows the parametric approach. For each valid output element it predicts a mean $\mu_i$ and a log-variance $s_i=\log\sigma_i^2$. The variance is heteroscedastic because it changes with the input and with the output position. The training loss rewards accurate means while penalizing variance estimates that are inconsistent with the observed residuals. This uncertainty is conditional on the model and data representation and is best interpreted as an aleatoric or residual uncertainty estimate. It does not quantify epistemic uncertainty caused by limited training data, parameter uncertainty, or architectural misspecification \citep{kendall2017uncertainties}.
+
+The predicted distribution is also factorized: conditional covariances between variables, depths, and neighbouring grid points are not represented explicitly. Empirical coverage can test whether marginal intervals contain the expected fraction of targets, but it cannot establish that sampled three-dimensional fields would be dynamically coherent. A complete probabilistic evaluation would additionally consider proper scoring rules, sharpness, reliability across subsets, and multivariate dependence.
+
+\section{Positioning of This Thesis}
+
+The reviewed literature shows a progression from deterministic one-step emulators to global autoregressive systems and probabilistic generative ensembles. It also shows that strong results depend on large training archives, domain-specific representations, exogenous forcing, and rigorous evaluation. The present work addresses a smaller but complete problem: constructing a reproducible end-to-end pipeline for next-day three-dimensional prediction and testing whether a compact probabilistic U-Net can improve over persistence.
+
+Its methodological contribution is the integration of lazy NetCDF access, depth-dependent standardization, chronological splitting, masked volumetric learning, heteroscedastic Gaussian output, resumable checkpointing, and baseline-based evaluation in a single implementation. The experiments do not claim operational superiority. Their value lies in establishing a verified baseline, identifying where the current architecture succeeds or fails, and defining the changes required for a stronger future model.

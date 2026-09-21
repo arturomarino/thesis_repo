@@ -1,0 +1,58 @@
+\chapter{Conclusions and Future Work}
+\label{chap:conclusions}
+
+\section{Achievements}
+
+This thesis set out to design, implement, and evaluate an end-to-end deep-learning pipeline for probabilistic three-dimensional forecasting of the Mediterranean ocean state. The resulting system covers the complete path from a large Copernicus-derived NetCDF archive to reproducible full-year inference. It performs lazy Xarray/Dask data access, selects the relevant variables, applies a depth-dependent land--sea mask, creates chronological train--validation--test subsets, fits standardization statistics on training data alone, and constructs supervised PyTorch samples without loading the complete archive into memory.
+
+The forecasting model is a compact 3D U-Net with 90,952 trainable parameters. Three consecutive daily states provide twelve input channels, and the network predicts four variables for the following day at 46 depth levels. The encoder and decoder jointly process depth, latitude, and longitude, while skip connections retain high-resolution information. Two output heads estimate a conditional mean and log-variance at every valid point. This design turns the model into a heteroscedastic Gaussian forecaster and permits deterministic errors and uncertainty intervals to be evaluated from the same output.
+
+The training procedure is also a substantive result of the work. A target mask prevents land and invalid cells from influencing gradients. The objective combines Gaussian negative log-likelihood with a channel-weighted mean-squared-error term. AdamW optimization, gradient clipping, chronological validation, separate best and last checkpoints, resume support, end-of-epoch fixed-weight evaluation, and cumulative learning-curve generation make long Colab runs recoverable and auditable. The preserved checkpoints document the development from one to three context days and from a small to a wider latent representation.
+
+The final model was selected at epoch 94. On 1998 validation data it obtained normalized RMSE 0.1783 and MAE 0.0843; on the unseen 1999 test year the corresponding values were 0.2013 and 0.0907. Near-surface temperature forecasts achieved a test RMSE of 0.419$^{\circ}$C and MAE of 0.277$^{\circ}$C. These values show that the network reconstructs physically plausible fields and learns beyond its initial state.
+
+The most important conclusion is nevertheless negative: the predicted mean does not outperform persistence. Test persistence RMSE is 0.1943 in aggregate standardized space, yielding an RMSE skill of $-0.0736$. For near-surface temperature, persistence RMSE is 0.208$^{\circ}$C and neural skill is $-3.043$. Reporting this result directly is essential. The goal of an experimental thesis is not to guarantee a positive score, but to establish what the implemented method can and cannot achieve under a controlled protocol.
+
+The uncertainty output provides a separate result. Test coverage is 0.748 for the nominal 68\% interval and 0.946 for the nominal 95\% interval. The wider interval is close to nominal coverage, while the one-standard-deviation interval contains too many targets and is therefore conservative on aggregate. Near-surface temperature intervals are more conservative still. These metrics show that the variance head learns a non-trivial scale, but coverage alone is only a partial calibration test and does not imply that complete sampled ocean states would be physically coherent.
+
+\section{Limitations}
+
+The first limitation is the temporal extent of the dataset. Six years produce only four years for training after reserving one year each for validation and test. Consecutive ocean states are highly correlated, so the large number of spatial values in one tensor does not create an equally large number of independent circulation regimes. Rare events, unusual atmospheric conditions, and interannual variability are only sparsely represented.
+
+The second limitation is the forecast formulation. The network predicts the complete state one day ahead. At this horizon, the latest observed state is already an excellent approximation. A small smoothing error or bias can make a learned field worse than persistence even when the broad spatial structure is accurate. The current objective does not explicitly preserve the latest input or isolate the daily increment.
+
+The third limitation is the set of predictors. Temperature, salinity, and horizontal velocities are used, but the network has no atmospheric forcing, surface fluxes, wind stress, bathymetry channel, or lateral-boundary input. Sea-surface height is selected and standardized by the pipeline but excluded from the volumetric model because it is two-dimensional. The strong surface-temperature deficit suggests that missing surface drivers are consequential.
+
+The fourth limitation is probabilistic. Independent Gaussian outputs cannot represent skewed or multimodal residuals, correlations between variables, or coherent displacement of fronts and eddies. The learned variance also mixes irreducible variability, omitted predictors, and model error. It does not quantify uncertainty over the network parameters. Therefore, the system should not be interpreted as a complete ensemble forecast.
+
+The fifth limitation is experimental scale. Hyperparameters were refined through a small sequence of checkpoints rather than a controlled factorial or Bayesian search. The final configuration changes more than one element relative to earlier checkpoints, preventing a causal attribution of improvement to context length alone. The historical training logs also did not preserve the exact GPU, elapsed compute time, maximum epoch argument, patience, and original package versions. The final software should record these fields automatically.
+
+Finally, the aggregate standardized metrics pool all variables and depths. This is useful for model selection but incomplete for oceanographic interpretation. Physical-unit results were preserved for temperature only. Salinity and velocity should receive separate diagnostics, including vertical profiles and regional maps, before the model is used to support scientific conclusions.
+
+\section{Future Work}
+
+The first modelling change should make persistence part of the architecture. Instead of predicting $X_{t+1}$ directly, the network can predict the increment
+
+\[
+\Delta X_{t+1}=X_{t+1}-X_t,
+\qquad
+\widehat{X}_{t+1}=X_t+\widehat{\Delta X}_{t+1}.
+\]
+
+With this residual formulation, a zero network output exactly reproduces persistence. Optimization can focus on the smaller and dynamically meaningful change, and negative skill should become easier to diagnose by variable and region. Separate loss weights by variable and depth could then prevent the many deep, slowly varying cells from dominating objectives intended to improve surface dynamics.
+
+A second priority is a longer and more diverse dataset. Extending the GLORYS12-derived archive beyond six years would expose the model to more seasonal cycles and circulation regimes. A proper experiment should preserve a final chronological test block and perform hyperparameter selection only on earlier years. Training on the native or a less coarsened grid may retain mesoscale structures, although memory and compute requirements would increase sharply.
+
+The predictor set should also be expanded. Atmospheric variables such as wind components, surface-air temperature, pressure, radiation, precipitation, and heat flux can inform daily surface changes. Sea-surface height and mixed-layer depth can be introduced through a two-dimensional encoder whose features are fused with the three-dimensional volume at selected depths or latent resolutions. Static bathymetry and coordinate encodings may help distinguish physically different boundary regions that otherwise share similar local patches.
+
+Longer forecast horizons are needed to determine when a learned model becomes more useful than persistence. Direct models could predict several lead times, or the one-day network could be evaluated autoregressively. Autoregression requires dedicated stability analysis because small biases accumulate and predictions leave the training distribution. Multi-step training, scheduled sampling, or losses evaluated over trajectories may reduce this mismatch.
+
+Architecturally, 3D attention or neural-operator blocks could enlarge the receptive field beyond the compact convolutional hierarchy. Mediterranean circulation contains interactions across basins and through narrow straits that may not be captured adequately by local convolutions. Such additions should be compared through controlled ablations, retaining the same dataset split and persistence reference so that increased complexity is justified by measurable skill.
+
+The probabilistic model can be improved along two complementary paths. Ensembles obtained from independently trained networks, bootstrapped data, or dropout-based approximations can probe epistemic uncertainty. Conditional diffusion or other generative approaches can produce spatially coherent alternative trajectories and represent non-Gaussian distributions. These methods require proper scoring rules such as CRPS or energy score, rank histograms, reliability diagrams by depth and region, and comparisons of both calibration and sharpness.
+
+The evaluation software should accumulate physical-unit RMSE, MAE, bias, and uncertainty for every output variable and depth. Vertical profiles, seasonal subsets, and maps of median and extreme-error cases would reveal where improvement occurs. Independent observations would provide a stronger test than reanalysis targets alone. Automated case selection would also prevent qualitative figures from being chosen after inspecting their visual appearance.
+
+Finally, reproducibility metadata should become part of every checkpoint. The command-line arguments, Git commit, product identifier, data checksum, mask checksum, Python and library versions, GPU name and memory, session duration, and cumulative training time can all be stored with negligible overhead. This would close the remaining provenance gaps in the present experiment and make later comparisons between architectures scientifically defensible.
+
+The current system therefore provides a complete and verified baseline. Its negative skill against persistence identifies the most important technical problem rather than concealing it. The pipeline, checkpoints, and evaluation metrics establish a foundation on which residual prediction, additional forcings, longer archives, stronger architectures, and richer probabilistic methods can be tested one change at a time.
