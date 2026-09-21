@@ -169,8 +169,7 @@ validation year by replacing `--evaluate-test` with
 `1 - MSE_model / MSE_persistence`: positive values mean that the neural model
 outperforms the forecast that simply copies the previous day.
 
-The already-trained checkpoint can also be evaluated specifically for sea
-temperature in degrees Celsius, without retraining:
+The legacy temperature command remains available without retraining:
 
 ```bash
 python src/train.py \
@@ -184,9 +183,59 @@ python src/train.py \
   --evaluate-temperature-validation
 ```
 
-This reports physical RMSE, MAE, bias, predicted uncertainty and coverage for
-all depths and for the available level nearest to the requested depth. Use
-`--evaluate-temperature-test` only after model selection is complete.
+For backward compatibility this command now routes to the multivariable
+physical evaluator described below; it reports all four channels rather than
+temperature alone. Use `--evaluate-temperature-test` only after model selection
+is complete.
+
+## Annual multivariable evaluation
+
+The final-year evaluation can include the complete January 2--December 31
+target interval. With a three-day context, the last two days of the previous
+year are prepended as inputs only. They are never counted as validation or test
+targets. For the non-leap 1998 and 1999 splits this produces 364 forecasts.
+
+The following command evaluates temperature, salinity, zonal velocity and
+meridional velocity in their physical units, saves JSON/CSV tables, and creates
+the 2x2 surface map of pointwise annual mean absolute error:
+
+```bash
+python src/train.py \
+  --data-path /content/glorys12_med_test_1994_2003.nc \
+  --mask-path /content/land_sea_mask.nc \
+  --stats-path /content/normalization_stats.nc \
+  --checkpoint-path /content/drive/MyDrive/Thesis/best_forecaster_v3.pt \
+  --reuse-stats \
+  --device cuda \
+  --evaluation-depth 0.5 \
+  --evaluation-output-directory \
+    /content/drive/MyDrive/Thesis/thesis_repo/outputs/annual_evaluation \
+  --evaluate-physical-validation \
+  --evaluate-physical-test \
+  --plot-annual-errors-test
+```
+
+The output directory contains `physical_metrics_validation.json/.csv`,
+`physical_metrics_test.json/.csv`, `annual_mae_maps_1999.nc`, and
+`annual_mae_maps_1999.png`. The NetCDF stores both the mean absolute error and
+the number of valid dates at every grid cell. The legacy
+`--evaluate-temperature-validation` and `--evaluate-temperature-test` flags
+remain accepted as aliases for the multivariable evaluation.
+
+After both JSON files exist, generate the LaTeX tables and copy the figure into
+the canonical thesis source with:
+
+```bash
+python src/render_thesis_results.py \
+  --validation-json outputs/annual_evaluation/physical_metrics_validation.json \
+  --test-json outputs/annual_evaluation/physical_metrics_test.json \
+  --output-tex tesi/chapter/annual-results-generated.tex \
+  --figure-source outputs/annual_evaluation/annual_mae_maps_1999.png \
+  --figure-destination tesi/img/annual-mae-maps-1999.png
+```
+
+The renderer refuses metric files that do not contain exactly 364 forecasts,
+preventing the old 362-pair results from being inserted by mistake.
 
 Quick checks:
 

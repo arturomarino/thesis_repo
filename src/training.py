@@ -16,7 +16,7 @@ Non esegue:
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import torch
 from torch import nn
@@ -91,6 +91,51 @@ class TemperatureEvaluationResult:
     all_depths: TemperatureComparisonMetrics
     selected_depth: TemperatureComparisonMetrics
     selected_depth_m: float
+
+
+@dataclass(frozen=True)
+class PhysicalComparisonMetrics:
+    """Metriche in unita' fisiche per una variabile volumetrica."""
+
+    model_rmse: float
+    model_mae: float
+    model_bias: float
+    model_mean_standard_deviation: float
+    model_coverage_68: float
+    model_coverage_95: float
+    persistence_rmse: float
+    persistence_mae: float
+    persistence_bias: float
+    rmse_skill_score: float
+    valid_points: int
+
+
+@dataclass(frozen=True)
+class VariablePhysicalEvaluation:
+    """Metriche globali e superficiali di una singola variabile."""
+
+    all_depths: PhysicalComparisonMetrics
+    selected_depth: PhysicalComparisonMetrics
+    unit: str
+
+
+@dataclass(frozen=True)
+class PhysicalEvaluationResult:
+    """Valutazione fisica multivariata prodotta con un solo passaggio."""
+
+    variables: dict[str, VariablePhysicalEvaluation]
+    selected_depth_m: float
+    forecast_count: int
+
+
+@dataclass(frozen=True)
+class AnnualErrorMapResult:
+    """Somma annuale ridotta a mappe MAE superficiali per canale."""
+
+    mean_absolute_error: torch.Tensor
+    valid_counts: torch.Tensor
+    selected_depth_m: float
+    forecast_count: int
 
 
 @dataclass(frozen=True)
@@ -413,6 +458,300 @@ def rmse_skill_score(model_rmse: float, persistence_rmse: float) -> float:
     if persistence_rmse <= 0:
         raise ValueError("persistence_rmse deve essere positivo.")
     return 1.0 - (model_rmse / persistence_rmse) ** 2
+
+
+def run_physical_evaluation(
+    model: nn.Module,
+    batches: Iterable[OceanForecastSample],
+    device: torch.device,
+    variable_names: tuple[str, ...],
+    standard_deviations: torch.Tensor,
+    depth_values_m: tuple[float, ...],
+    units: Mapping[str, str],
+    requested_depth_m: float = 0.5,
+    progress_label: str | None = None,
+) -> PhysicalEvaluationResult:
+    """Valuta tutti i canali in unita' fisiche con un solo forward per batch."""
+
+    if not variable_names:
+        raise ValueError("Specificare almeno una variabile.")
+    if standard_deviations.ndim != 2:
+        raise ValueError("Gli standard devono avere forma [canale, profondita].")
+    if standard_deviations.shape != (len(variable_names), len(depth_values_m)):
+        raise ValueError("Forma degli standard non compatibile con variabili e profondita'.")
+    if not depth_values_m:
+        raise ValueError("Il dataset non contiene profondita'.")
+    physical_std = standard_deviations.to(device=device, dtype=torch.float32)
+    if not torch.isfinite(physical_std).all() or bool((physical_std <= 0).any()):
+        raise ValueError("Gli standard fisici devono essere finiti e positivi.")
+
+    selected_depth_index = min(
+        range(len(depth_values_m)),
+        key=lambda index: abs(depth_values_m[index] - requested_depth_m),
+    )
+    accumulators = {
+        name: {
+            "all_depths": _new_physical_accumulator(),
+            "selected_depth": _new_physical_accumulator(),
+        }
+        for name in variable_names
+    }
+    model.eval()
+    forecast_count = 0
+
+    iterable = batches
+    progress_bar = None
+    if progress_label is not None and tqdm is not None:
+        progress_bar = tqdm(
+            batches,
+            desc=progress_label,
+            total=len(batches) if hasattr(batches, "__len__") else None,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        iterable = progress_bar
+
+    with torch.inference_mode():
+        for batch in iterable:
+            input_volume = batch["input"]["volume"].to(device, non_blocking=True)
+            target = batch["target"]["volume"].to(device, non_blocking=True)
+            mask = batch["target"]["volume_mask"].to(
+                device,
+                non_blocking=True,
+                dtype=torch.bool,
+            )
+            if target.ndim != 5 or target.shape[1] != len(variable_names):
+                raise ValueError("Numero di canali target inatteso.")
+            if target.shape[2] != len(depth_values_m) or mask.shape != target.shape:
+                raise ValueError("Forma di target, mask o profondita' inattesa.")
+            if input_volume.shape[1] < target.shape[1]:
+                raise ValueError("L'input non contiene l'ultimo stato completo.")
+
+            output = model(input_volume)
+            mean = output["mean"]
+            log_variance = output["log_variance"]
+            if mean.shape != target.shape or log_variance.shape != target.shape:
+                raise ValueError("Forma dell'output probabilistico inattesa.")
+            latest_input = input_volume[:, -target.shape[1] :]
+            forecast_count += int(target.shape[0])
+
+            for channel, name in enumerate(variable_names):
+                scale = physical_std[channel].view(1, -1, 1, 1)
+                model_error = (mean[:, channel] - target[:, channel]) * scale
+                persistence_error = (
+                    latest_input[:, channel] - target[:, channel]
+                ) * scale
+                predicted_std = torch.exp(0.5 * log_variance[:, channel]) * scale
+                valid = mask[:, channel]
+                _accumulate_physical_metrics(
+                    accumulators[name]["all_depths"],
+                    model_error,
+                    persistence_error,
+                    predicted_std,
+                    valid,
+                )
+                _accumulate_physical_metrics(
+                    accumulators[name]["selected_depth"],
+                    model_error[:, selected_depth_index],
+                    persistence_error[:, selected_depth_index],
+                    predicted_std[:, selected_depth_index],
+                    valid[:, selected_depth_index],
+                )
+
+    if forecast_count == 0:
+        raise ValueError("La valutazione non contiene previsioni.")
+    results = {
+        name: VariablePhysicalEvaluation(
+            all_depths=_finalize_physical_metrics(
+                accumulators[name]["all_depths"]
+            ),
+            selected_depth=_finalize_physical_metrics(
+                accumulators[name]["selected_depth"]
+            ),
+            unit=str(units.get(name, "unknown")),
+        )
+        for name in variable_names
+    }
+    return PhysicalEvaluationResult(
+        variables=results,
+        selected_depth_m=float(depth_values_m[selected_depth_index]),
+        forecast_count=forecast_count,
+    )
+
+
+def run_annual_error_map_evaluation(
+    model: nn.Module,
+    batches: Iterable[OceanForecastSample],
+    device: torch.device,
+    standard_deviations: torch.Tensor,
+    depth_values_m: tuple[float, ...],
+    requested_depth_m: float = 0.5,
+    progress_label: str | None = None,
+) -> AnnualErrorMapResult:
+    """Calcola il MAE punto-per-punto al livello verticale richiesto."""
+
+    if standard_deviations.ndim != 2:
+        raise ValueError("Gli standard devono avere forma [canale, profondita].")
+    if standard_deviations.shape[1] != len(depth_values_m):
+        raise ValueError("Profondita' degli standard inattese.")
+    selected_depth_index = min(
+        range(len(depth_values_m)),
+        key=lambda index: abs(depth_values_m[index] - requested_depth_m),
+    )
+    physical_std = standard_deviations.to(device=device, dtype=torch.float32)
+    if not torch.isfinite(physical_std).all() or bool((physical_std <= 0).any()):
+        raise ValueError("Gli standard fisici devono essere finiti e positivi.")
+
+    error_sum: torch.Tensor | None = None
+    valid_counts: torch.Tensor | None = None
+    forecast_count = 0
+    model.eval()
+    iterable = batches
+    progress_bar = None
+    if progress_label is not None and tqdm is not None:
+        progress_bar = tqdm(
+            batches,
+            desc=progress_label,
+            total=len(batches) if hasattr(batches, "__len__") else None,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        iterable = progress_bar
+
+    with torch.inference_mode():
+        for batch in iterable:
+            input_volume = batch["input"]["volume"].to(device, non_blocking=True)
+            target = batch["target"]["volume"].to(device, non_blocking=True)
+            mask = batch["target"]["volume_mask"].to(
+                device,
+                non_blocking=True,
+                dtype=torch.bool,
+            )
+            if target.ndim != 5 or mask.shape != target.shape:
+                raise ValueError("Forma del target annuale inattesa.")
+            if standard_deviations.shape[0] != target.shape[1]:
+                raise ValueError("Numero di canali degli standard inatteso.")
+            output = model(input_volume)
+            mean = output["mean"]
+            if mean.shape != target.shape:
+                raise ValueError("Forma della media prevista inattesa.")
+
+            scale = physical_std[:, selected_depth_index].view(1, -1, 1, 1)
+            absolute_error = (
+                mean[:, :, selected_depth_index]
+                - target[:, :, selected_depth_index]
+            ).abs() * scale
+            valid = mask[:, :, selected_depth_index]
+            batch_sum = torch.where(valid, absolute_error, 0.0).sum(dim=0)
+            batch_counts = valid.sum(dim=0, dtype=torch.int64)
+            if error_sum is None:
+                error_sum = torch.zeros_like(batch_sum, dtype=torch.float64)
+                valid_counts = torch.zeros_like(batch_counts, dtype=torch.int64)
+            error_sum += batch_sum.to(dtype=torch.float64)
+            valid_counts += batch_counts
+            forecast_count += int(target.shape[0])
+
+    if error_sum is None or valid_counts is None or forecast_count == 0:
+        raise ValueError("La valutazione annuale non contiene previsioni.")
+    mean_error = torch.full_like(error_sum, float("nan"))
+    valid_cells = valid_counts > 0
+    mean_error[valid_cells] = error_sum[valid_cells] / valid_counts[valid_cells]
+    return AnnualErrorMapResult(
+        mean_absolute_error=mean_error.cpu(),
+        valid_counts=valid_counts.cpu(),
+        selected_depth_m=float(depth_values_m[selected_depth_index]),
+        forecast_count=forecast_count,
+    )
+
+
+def _new_physical_accumulator() -> dict[str, float | int]:
+    return {
+        "model_squared_error_sum": 0.0,
+        "model_absolute_error_sum": 0.0,
+        "model_error_sum": 0.0,
+        "model_standard_deviation_sum": 0.0,
+        "model_coverage_68_count": 0,
+        "model_coverage_95_count": 0,
+        "persistence_squared_error_sum": 0.0,
+        "persistence_absolute_error_sum": 0.0,
+        "persistence_error_sum": 0.0,
+        "valid_points": 0,
+    }
+
+
+def _accumulate_physical_metrics(
+    accumulator: dict[str, float | int],
+    model_error: torch.Tensor,
+    persistence_error: torch.Tensor,
+    predicted_std: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> None:
+    valid_points = int(valid_mask.sum().item())
+    if valid_points == 0:
+        return
+    selected_model_error = model_error[valid_mask]
+    selected_persistence_error = persistence_error[valid_mask]
+    selected_std = predicted_std[valid_mask]
+    absolute_error = selected_model_error.abs()
+    accumulator["model_squared_error_sum"] += float(
+        selected_model_error.pow(2).sum().item()
+    )
+    accumulator["model_absolute_error_sum"] += float(absolute_error.sum().item())
+    accumulator["model_error_sum"] += float(selected_model_error.sum().item())
+    accumulator["model_standard_deviation_sum"] += float(selected_std.sum().item())
+    accumulator["model_coverage_68_count"] += int(
+        (absolute_error <= selected_std).sum().item()
+    )
+    accumulator["model_coverage_95_count"] += int(
+        (absolute_error <= 1.96 * selected_std).sum().item()
+    )
+    accumulator["persistence_squared_error_sum"] += float(
+        selected_persistence_error.pow(2).sum().item()
+    )
+    accumulator["persistence_absolute_error_sum"] += float(
+        selected_persistence_error.abs().sum().item()
+    )
+    accumulator["persistence_error_sum"] += float(
+        selected_persistence_error.sum().item()
+    )
+    accumulator["valid_points"] += valid_points
+
+
+def _finalize_physical_metrics(
+    accumulator: Mapping[str, float | int],
+) -> PhysicalComparisonMetrics:
+    valid_points = int(accumulator["valid_points"])
+    if valid_points == 0:
+        raise ValueError("La valutazione non contiene punti validi.")
+    model_rmse = (
+        float(accumulator["model_squared_error_sum"]) / valid_points
+    ) ** 0.5
+    persistence_rmse = (
+        float(accumulator["persistence_squared_error_sum"]) / valid_points
+    ) ** 0.5
+    return PhysicalComparisonMetrics(
+        model_rmse=model_rmse,
+        model_mae=float(accumulator["model_absolute_error_sum"]) / valid_points,
+        model_bias=float(accumulator["model_error_sum"]) / valid_points,
+        model_mean_standard_deviation=(
+            float(accumulator["model_standard_deviation_sum"]) / valid_points
+        ),
+        model_coverage_68=(
+            int(accumulator["model_coverage_68_count"]) / valid_points
+        ),
+        model_coverage_95=(
+            int(accumulator["model_coverage_95_count"]) / valid_points
+        ),
+        persistence_rmse=persistence_rmse,
+        persistence_mae=(
+            float(accumulator["persistence_absolute_error_sum"]) / valid_points
+        ),
+        persistence_bias=(
+            float(accumulator["persistence_error_sum"]) / valid_points
+        ),
+        rmse_skill_score=rmse_skill_score(model_rmse, persistence_rmse),
+        valid_points=valid_points,
+    )
 
 
 def run_temperature_evaluation(

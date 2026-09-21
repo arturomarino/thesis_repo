@@ -12,7 +12,9 @@ from training import (
     fit_forecaster,
     load_forecaster_checkpoint,
     rmse_skill_score,
+    run_annual_error_map_evaluation,
     run_forecast_epoch,
+    run_physical_evaluation,
     run_persistence_baseline,
     run_temperature_evaluation,
 )
@@ -189,6 +191,71 @@ def test_temperature_evaluation_returns_physical_metrics() -> None:
     assert result.all_depths.persistence_mae_c == 7.0
     assert result.selected_depth.model_rmse_c == 20.0
     assert result.selected_depth.persistence_rmse_c == 10.0
+
+
+def test_multivariable_physical_evaluation_scales_each_channel() -> None:
+    input_volume = torch.zeros(1, 4, 2, 1, 1)
+    target_volume = torch.ones_like(input_volume)
+    mask = torch.ones_like(input_volume, dtype=torch.bool)
+    mask[:, 1, 1] = False
+    batch = {
+        "input": {"volume": input_volume, "volume_mask": mask},
+        "target": {"volume": target_volume, "volume_mask": mask},
+        "input_time_index": torch.tensor([0]),
+        "target_time_index": torch.tensor([1]),
+    }
+    names = ("temperature", "salinity", "u", "v")
+    result = run_physical_evaluation(
+        model=TinyProbabilisticForecaster(),
+        batches=[batch],
+        device=torch.device("cpu"),
+        variable_names=names,
+        standard_deviations=torch.tensor(
+            [[2.0, 4.0], [3.0, 6.0], [0.1, 0.2], [0.5, 1.0]]
+        ),
+        depth_values_m=(0.506, 10.0),
+        units={"temperature": "degC", "salinity": "1e-3", "u": "m/s", "v": "m/s"},
+        requested_depth_m=0.5,
+    )
+
+    assert result.forecast_count == 1
+    assert result.selected_depth_m == 0.506
+    assert result.variables["temperature"].selected_depth.model_mae == 2.0
+    assert result.variables["temperature"].all_depths.model_mae == 3.0
+    assert result.variables["salinity"].all_depths.valid_points == 1
+    assert result.variables["salinity"].all_depths.model_rmse == 3.0
+    assert result.variables["u"].unit == "m/s"
+
+
+def test_annual_error_map_is_pointwise_mean_absolute_error() -> None:
+    input_volume = torch.zeros(2, 4, 1, 1, 2)
+    target_volume = torch.ones_like(input_volume)
+    target_volume[0, 0, 0, 0] = torch.tensor([1.0, -2.0])
+    target_volume[1, 0, 0, 0] = torch.tensor([-3.0, 4.0])
+    mask = torch.ones_like(target_volume, dtype=torch.bool)
+    mask[1, 0, 0, 0, 0] = False
+    mask[:, 3, 0, 0, 1] = False
+    batch = {
+        "input": {"volume": input_volume, "volume_mask": torch.ones_like(mask)},
+        "target": {"volume": target_volume, "volume_mask": mask},
+        "input_time_index": torch.tensor([0, 1]),
+        "target_time_index": torch.tensor([1, 2]),
+    }
+
+    result = run_annual_error_map_evaluation(
+        model=TinyProbabilisticForecaster(),
+        batches=[batch],
+        device=torch.device("cpu"),
+        standard_deviations=torch.ones(4, 1),
+        depth_values_m=(0.506,),
+    )
+
+    assert result.forecast_count == 2
+    assert result.valid_counts[0, 0, 0].item() == 1
+    assert result.mean_absolute_error[0, 0, 0].item() == 1.0
+    assert result.mean_absolute_error[0, 0, 1].item() == 3.0
+    assert result.valid_counts[3, 0, 1].item() == 0
+    assert torch.isnan(result.mean_absolute_error[3, 0, 1])
 
 
 def test_fit_early_stops_after_patience_without_improvement(

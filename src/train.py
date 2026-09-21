@@ -9,8 +9,21 @@ import xarray as xr
 from dask.base import is_dask_collection
 
 from data_manager import DataManager
-from dataloader import DataLoaderConfig, create_ocean_dataloaders
-from dataset import OceanForecastDataset, OceanStateDataset
+from annual_evaluation import (
+    build_annual_error_dataset,
+    save_annual_error_outputs,
+    save_physical_metrics,
+)
+from dataloader import (
+    DataLoaderConfig,
+    create_evaluation_dataloader,
+    create_ocean_dataloaders,
+)
+from dataset import (
+    OceanForecastDataset,
+    OceanStateDataset,
+    build_annual_evaluation_dataset,
+)
 from models.autoencoder import VolumeAutoencoderConfig, VolumeUNetAutoencoder
 from normalization import Normalizer
 from preprocessing import Preprocessor
@@ -20,6 +33,8 @@ from training import (
     read_forecaster_checkpoint,
     rmse_skill_score,
     run_forecast_epoch,
+    run_annual_error_map_evaluation,
+    run_physical_evaluation,
     run_persistence_baseline,
     run_temperature_evaluation,
     train_autoencoder_step,
@@ -212,18 +227,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--evaluate-temperature-validation",
         action="store_true",
-        help="Valuta la sola temperatura in gradi Celsius sulla validation.",
+        help=(
+            "Alias compatibile di --evaluate-physical-validation; valuta "
+            "tutte le variabili."
+        ),
     )
     parser.add_argument(
         "--evaluate-temperature-test",
         action="store_true",
-        help="Valuta la sola temperatura in gradi Celsius sul test.",
+        help=(
+            "Alias compatibile di --evaluate-physical-test; valuta tutte le "
+            "variabili."
+        ),
     )
     parser.add_argument(
+        "--evaluation-depth",
         "--temperature-depth",
+        dest="evaluation_depth",
         type=float,
         default=0.5,
-        help="Profondita' per il report della temperatura. Default: 0.5 m.",
+        help="Profondita' per metriche e mappe fisiche. Default: 0.5 m.",
+    )
+    parser.add_argument(
+        "--evaluate-physical-validation",
+        action="store_true",
+        help="Valuta tutte le variabili in unita' fisiche sulla validation.",
+    )
+    parser.add_argument(
+        "--evaluate-physical-test",
+        action="store_true",
+        help="Valuta tutte le variabili in unita' fisiche sul test annuale.",
+    )
+    parser.add_argument(
+        "--plot-annual-errors-test",
+        action="store_true",
+        help="Salva NetCDF e figura 2x2 del MAE punto-per-punto sul test.",
+    )
+    parser.add_argument(
+        "--evaluation-output-directory",
+        type=Path,
+        default=project_root / "outputs/annual_evaluation",
+        help="Cartella per metriche, NetCDF e figure della valutazione annuale.",
     )
     parser.add_argument(
         "--plot-learning-curve",
@@ -269,6 +313,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    if args.evaluate_temperature_validation:
+        args.evaluate_physical_validation = True
+        print(
+            "--evaluate-temperature-validation e' mantenuto come alias: "
+            "verranno valutate tutte le variabili fisiche."
+        )
+    if args.evaluate_temperature_test:
+        args.evaluate_physical_test = True
+        print(
+            "--evaluate-temperature-test e' mantenuto come alias: "
+            "verranno valutate tutte le variabili fisiche."
+        )
+
     if args.plot_learning_curve:
         create_learning_curve_from_checkpoint(args)
         return
@@ -299,6 +356,9 @@ def main() -> None:
             args.evaluate_test,
             args.evaluate_temperature_validation,
             args.evaluate_temperature_test,
+            args.evaluate_physical_validation,
+            args.evaluate_physical_test,
+            args.plot_annual_errors_test,
         )
     )
     if evaluation_requested and not args.train_model:
@@ -423,6 +483,37 @@ def main() -> None:
     print(f"Num workers train: {loaders.train.num_workers}")
     print(f"Device selezionato: {device}")
 
+    annual_validation_loader = None
+    annual_test_loader = None
+    if evaluation_requested:
+        annual_loader_config = DataLoaderConfig(
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+        )
+        annual_validation_dataset = build_annual_evaluation_dataset(
+            normalized_train,
+            normalized_validation,
+            context_steps=args.context_steps,
+        )
+        annual_test_dataset = build_annual_evaluation_dataset(
+            normalized_validation,
+            normalized_test,
+            context_steps=args.context_steps,
+        )
+        annual_validation_loader = create_evaluation_dataloader(
+            annual_validation_dataset,
+            annual_loader_config,
+        )
+        annual_test_loader = create_evaluation_dataloader(
+            annual_test_dataset,
+            annual_loader_config,
+        )
+        print(
+            "Coppie annuali validation/test: "
+            f"{len(annual_validation_dataset)}/{len(annual_test_dataset)}"
+        )
+
     if args.first_real_training_step:
         run_first_real_training_step(loaders.train, args, device)
 
@@ -430,39 +521,53 @@ def main() -> None:
         run_full_training(args, loaders.train, loaders.validation, device)
 
     if args.evaluate_validation:
+        assert annual_validation_loader is not None
         evaluate_checkpoint_against_persistence(
             args,
-            loaders.validation,
+            annual_validation_loader,
             device,
             split_label="Validation",
         )
 
     if args.evaluate_test:
+        assert annual_test_loader is not None
         evaluate_checkpoint_against_persistence(
             args,
-            loaders.test,
+            annual_test_loader,
             device,
             split_label="Test",
         )
 
-    if args.evaluate_temperature_validation:
-        evaluate_temperature_checkpoint(
+    if args.evaluate_physical_validation:
+        assert annual_validation_loader is not None
+        evaluate_physical_checkpoint(
             args,
-            loaders.validation,
+            annual_validation_loader,
             normalizer.statistics,
             splits.validation,
             device,
             split_label="Validation",
         )
 
-    if args.evaluate_temperature_test:
-        evaluate_temperature_checkpoint(
+    if args.evaluate_physical_test:
+        assert annual_test_loader is not None
+        evaluate_physical_checkpoint(
             args,
-            loaders.test,
+            annual_test_loader,
             normalizer.statistics,
             splits.test,
             device,
             split_label="Test",
+        )
+
+    if args.plot_annual_errors_test:
+        assert annual_test_loader is not None
+        evaluate_annual_error_maps(
+            args,
+            annual_test_loader,
+            normalizer.statistics,
+            splits.test,
+            device,
         )
 
 
@@ -716,6 +821,179 @@ def evaluate_checkpoint_against_persistence(
     print(f"{split_label} RMSE skill vs persistence: {skill:.6f}")
 
 
+def _physical_evaluation_inputs(
+    statistics: dict[str, xr.DataArray],
+    split: xr.Dataset,
+) -> tuple[tuple[str, ...], torch.Tensor, tuple[float, ...], dict[str, str]]:
+    variable_names = OceanStateDataset.DEFAULT_VOLUME_VARIABLES
+    if "depth" not in split.coords:
+        raise ValueError("Coordinata depth assente dal dataset.")
+    depth_values = tuple(float(value) for value in split["depth"].values)
+    standard_deviations: list[torch.Tensor] = []
+    units: dict[str, str] = {}
+    for variable in variable_names:
+        statistic_name = f"{variable}_std"
+        if statistic_name not in statistics:
+            raise ValueError(f"Deviazione standard assente: {statistic_name}.")
+        standard = statistics[statistic_name]
+        if set(standard.dims) != {"depth"}:
+            raise ValueError(f"{statistic_name} deve dipendere solo da depth.")
+        standard_deviations.append(
+            torch.as_tensor(
+                standard.transpose("depth").values,
+                dtype=torch.float32,
+            )
+        )
+        units[variable] = str(split[variable].attrs.get("units", "unknown"))
+    return (
+        variable_names,
+        torch.stack(standard_deviations),
+        depth_values,
+        units,
+    )
+
+
+def _load_evaluation_model(
+    checkpoint_path: Path,
+    device: torch.device,
+) -> tuple[VolumeUNetAutoencoder, dict[str, object]]:
+    checkpoint = read_forecaster_checkpoint(checkpoint_path, device)
+    saved_config = checkpoint.get("model_config")
+    if not isinstance(saved_config, dict):
+        raise ValueError("Configurazione del modello assente nel checkpoint.")
+    model = VolumeUNetAutoencoder(
+        VolumeAutoencoderConfig(**saved_config)
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    return model, checkpoint
+
+
+def evaluate_physical_checkpoint(
+    args: argparse.Namespace,
+    data_loader,
+    statistics: dict[str, xr.DataArray],
+    split: xr.Dataset,
+    device: torch.device,
+    *,
+    split_label: str,
+) -> None:
+    """Valuta e salva tutte le variabili nelle rispettive unita' fisiche."""
+
+    variable_names, standards, depths, units = _physical_evaluation_inputs(
+        statistics,
+        split,
+    )
+    model, checkpoint = _load_evaluation_model(args.checkpoint_path, device)
+    result = run_physical_evaluation(
+        model=model,
+        batches=data_loader,
+        device=device,
+        variable_names=variable_names,
+        standard_deviations=standards,
+        depth_values_m=depths,
+        units=units,
+        requested_depth_m=args.evaluation_depth,
+        progress_label=(
+            f"{split_label} variabili fisiche" if not args.no_progress else None
+        ),
+    )
+    print(f"Checkpoint epoca: {checkpoint['epoch']}")
+    print(f"{split_label} previsioni annuali: {result.forecast_count}")
+    for variable, evaluation in result.variables.items():
+        _print_physical_metrics(
+            split_label,
+            variable,
+            "tutte le profondita'",
+            evaluation.unit,
+            evaluation.all_depths,
+        )
+        _print_physical_metrics(
+            split_label,
+            variable,
+            f"profondita' {result.selected_depth_m:.3f} m",
+            evaluation.unit,
+            evaluation.selected_depth,
+        )
+    json_path, csv_path = save_physical_metrics(
+        result,
+        args.evaluation_output_directory,
+        split_label=split_label,
+    )
+    print(f"Metriche JSON: {json_path}")
+    print(f"Metriche CSV: {csv_path}")
+
+
+def _print_physical_metrics(
+    split_label: str,
+    variable: str,
+    scope: str,
+    unit: str,
+    metrics,
+) -> None:
+    prefix = f"{split_label} {variable} ({scope})"
+    print(f"{prefix} RMSE modello: {metrics.model_rmse:.6f} {unit}")
+    print(f"{prefix} MAE modello: {metrics.model_mae:.6f} {unit}")
+    print(f"{prefix} bias modello: {metrics.model_bias:.6f} {unit}")
+    print(
+        f"{prefix} sigma media prevista: "
+        f"{metrics.model_mean_standard_deviation:.6f} {unit}"
+    )
+    print(
+        f"{prefix} coverage 68/95: "
+        f"{metrics.model_coverage_68:.3f}/{metrics.model_coverage_95:.3f}"
+    )
+    print(f"{prefix} RMSE persistence: {metrics.persistence_rmse:.6f} {unit}")
+    print(f"{prefix} MAE persistence: {metrics.persistence_mae:.6f} {unit}")
+    print(f"{prefix} bias persistence: {metrics.persistence_bias:.6f} {unit}")
+    print(f"{prefix} RMSE skill vs persistence: {metrics.rmse_skill_score:.6f}")
+
+
+def evaluate_annual_error_maps(
+    args: argparse.Namespace,
+    data_loader,
+    statistics: dict[str, xr.DataArray],
+    split: xr.Dataset,
+    device: torch.device,
+) -> None:
+    """Genera NetCDF e pannello 2x2 del MAE superficiale annuale."""
+
+    variable_names, standards, depths, units = _physical_evaluation_inputs(
+        statistics,
+        split,
+    )
+    model, _ = _load_evaluation_model(args.checkpoint_path, device)
+    result = run_annual_error_map_evaluation(
+        model=model,
+        batches=data_loader,
+        device=device,
+        standard_deviations=standards,
+        depth_values_m=depths,
+        requested_depth_m=args.evaluation_depth,
+        progress_label=(
+            "Test mappe annuali MAE" if not args.no_progress else None
+        ),
+    )
+    years = np.unique(split["time"].dt.year.values)
+    if years.size != 1:
+        raise ValueError("Lo split della mappa deve contenere un solo anno.")
+    dataset = build_annual_error_dataset(
+        result,
+        variable_names=variable_names,
+        latitudes=np.asarray(split["latitude"].values),
+        longitudes=np.asarray(split["longitude"].values),
+        units=units,
+        target_year=int(years[0]),
+    )
+    netcdf_path, png_path = save_annual_error_outputs(
+        dataset,
+        args.evaluation_output_directory,
+    )
+    print(f"Previsioni aggregate nella mappa: {result.forecast_count}")
+    print(f"Profondita' della mappa: {result.selected_depth_m:.3f} m")
+    print(f"Mappe NetCDF: {netcdf_path}")
+    print(f"Figura annuale: {png_path}")
+
+
 def evaluate_temperature_checkpoint(
     args: argparse.Namespace,
     data_loader,
@@ -757,7 +1035,7 @@ def evaluate_temperature_checkpoint(
             dtype=torch.float32,
         ),
         depth_values_m=depth_values,
-        requested_depth_m=args.temperature_depth,
+        requested_depth_m=args.evaluation_depth,
         progress_label=(
             f"{split_label} temperatura" if not args.no_progress else None
         ),

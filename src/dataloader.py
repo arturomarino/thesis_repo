@@ -92,6 +92,15 @@ def create_ocean_dataloaders(
     )
 
 
+def create_evaluation_dataloader(
+    dataset: OceanForecastDataset,
+    config: DataLoaderConfig | None = None,
+) -> DataLoader[OceanForecastSample]:
+    """Crea un loader deterministico per una valutazione separata."""
+
+    return _create_loader(dataset, config=config or DataLoaderConfig(), shuffle=False)
+
+
 def _create_loader(
     dataset: OceanForecastDataset,
     config: DataLoaderConfig,
