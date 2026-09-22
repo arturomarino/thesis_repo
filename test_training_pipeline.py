@@ -227,11 +227,13 @@ def test_multivariable_physical_evaluation_scales_each_channel() -> None:
     assert result.variables["u"].unit == "m/s"
 
 
-def test_annual_error_map_is_pointwise_mean_absolute_error() -> None:
+def test_annual_error_map_contains_model_persistence_and_standard_deviation() -> None:
     input_volume = torch.zeros(2, 4, 1, 1, 2)
     target_volume = torch.ones_like(input_volume)
     target_volume[0, 0, 0, 0] = torch.tensor([1.0, -2.0])
     target_volume[1, 0, 0, 0] = torch.tensor([-3.0, 4.0])
+    input_volume[0, 0, 0, 0] = torch.tensor([5.0, 1.0])
+    input_volume[1, 0, 0, 0] = torch.tensor([9.0, 2.0])
     mask = torch.ones_like(target_volume, dtype=torch.bool)
     mask[1, 0, 0, 0, 0] = False
     mask[:, 3, 0, 0, 1] = False
@@ -254,11 +256,17 @@ def test_annual_error_map_is_pointwise_mean_absolute_error() -> None:
     assert result.valid_counts[0, 0, 0].item() == 1
     assert result.mean_absolute_error[0, 0, 0].item() == 1.0
     assert result.mean_absolute_error[0, 0, 1].item() == 3.0
-    assert result.error_variance[0, 0, 0].item() == 0.0
-    assert result.error_variance[0, 0, 1].item() == 9.0
+    assert result.persistence_mean_absolute_error[0, 0, 0].item() == 4.0
+    assert result.persistence_mean_absolute_error[0, 0, 1].item() == 2.5
+    assert result.mae_difference_model_minus_persistence[0, 0, 0].item() == -3.0
+    assert result.mae_difference_model_minus_persistence[0, 0, 1].item() == 0.5
+    assert result.error_standard_deviation[0, 0, 0].item() == 0.0
+    assert result.error_standard_deviation[0, 0, 1].item() == 3.0
     assert result.valid_counts[3, 0, 1].item() == 0
     assert torch.isnan(result.mean_absolute_error[3, 0, 1])
-    assert torch.isnan(result.error_variance[3, 0, 1])
+    assert torch.isnan(result.persistence_mean_absolute_error[3, 0, 1])
+    assert torch.isnan(result.mae_difference_model_minus_persistence[3, 0, 1])
+    assert torch.isnan(result.error_standard_deviation[3, 0, 1])
 
 
 def test_fit_early_stops_after_patience_without_improvement(

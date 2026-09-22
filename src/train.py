@@ -262,7 +262,8 @@ def parse_args() -> argparse.Namespace:
         "--plot-annual-errors-test",
         action="store_true",
         help=(
-            "Salva NetCDF e figure 2x2 di MAE e varianza dell'errore sul test."
+            "Salva NetCDF e figure 2x2 di MAE modello/persistence, "
+            "differenza e deviazione standard dell'errore sul test."
         ),
     )
     parser.add_argument(
@@ -957,7 +958,7 @@ def evaluate_annual_error_maps(
     split: xr.Dataset,
     device: torch.device,
 ) -> None:
-    """Genera NetCDF e pannelli 2x2 di MAE e varianza annuali."""
+    """Genera NetCDF e pannelli 2x2 di MAE, dispersione e persistence."""
 
     variable_names, standards, depths, units = _physical_evaluation_inputs(
         statistics,
@@ -986,7 +987,13 @@ def evaluate_annual_error_maps(
         units=units,
         target_year=int(years[0]),
     )
-    netcdf_path, png_path, variance_png_path = save_annual_error_outputs(
+    (
+        netcdf_path,
+        png_path,
+        standard_deviation_png_path,
+        persistence_png_path,
+        difference_png_path,
+    ) = save_annual_error_outputs(
         dataset,
         args.evaluation_output_directory,
     )
@@ -994,7 +1001,9 @@ def evaluate_annual_error_maps(
     print(f"Profondita' della mappa: {result.selected_depth_m:.3f} m")
     print(f"Mappe NetCDF: {netcdf_path}")
     print(f"Figura annuale: {png_path}")
-    print(f"Figura varianza annuale: {variance_png_path}")
+    print(f"Figura deviazione standard annuale: {standard_deviation_png_path}")
+    print(f"Figura MAE persistence annuale: {persistence_png_path}")
+    print(f"Figura differenza MAE modello-persistence: {difference_png_path}")
 
 
 def evaluate_temperature_checkpoint(

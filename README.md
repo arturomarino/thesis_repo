@@ -197,8 +197,10 @@ targets. For the non-leap 1998 and 1999 splits this produces 364 forecasts.
 
 The following command evaluates temperature, salinity, zonal velocity and
 meridional velocity in their physical units, saves JSON/CSV tables, and creates
-two 2x2 surface figures: pointwise annual mean absolute error and temporal
-variance of the signed forecast error. Each panel uses its 98th percentile as
+four 2x2 surface figures: pointwise annual mean absolute error of the model,
+temporal standard deviation of its signed forecast error, mean absolute error
+of the persistence baseline, and their MAE difference (model minus
+persistence). Each panel uses its 95th percentile as
 the color-scale maximum so isolated outliers do not hide the spatial pattern:
 
 ```bash
@@ -219,10 +221,14 @@ python src/train.py \
 
 The output directory contains `physical_metrics_validation.json/.csv`,
 `physical_metrics_test.json/.csv`, `annual_mae_maps_1999.nc`, and
-the figures `annual_mae_maps_1999.png` and
-`annual_error_variance_maps_1999.png`. The NetCDF stores the mean absolute
-error, population variance of the signed error, and number of valid dates at
-every grid cell. The legacy
+the figures `annual_mae_maps_1999.png`,
+`annual_error_standard_deviation_maps_1999.png`,
+`annual_persistence_mae_maps_1999.png`, and
+`annual_mae_difference_model_minus_persistence_maps_1999.png`. The NetCDF
+stores the model and persistence mean absolute errors, their difference, the
+population standard deviation of the model signed error, and number of valid
+dates at every grid cell. Positive values in the difference map mean the model
+has a larger MAE than persistence. The legacy
 `--evaluate-temperature-validation` and `--evaluate-temperature-test` flags
 remain accepted as aliases for the multivariable evaluation.
 

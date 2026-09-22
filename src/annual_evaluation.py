@@ -81,17 +81,24 @@ def build_annual_error_dataset(
     """Converte i tensori aggregati in un dataset NetCDF auto-descrittivo."""
 
     errors = result.mean_absolute_error.numpy()
-    variances = result.error_variance.numpy()
+    persistence_errors = result.persistence_mean_absolute_error.numpy()
+    mae_differences = result.mae_difference_model_minus_persistence.numpy()
+    standard_deviations = result.error_standard_deviation.numpy()
     counts = result.valid_counts.numpy()
     expected_shape = (len(variable_names), len(latitudes), len(longitudes))
     if (
         errors.shape != expected_shape
-        or variances.shape != expected_shape
+        or persistence_errors.shape != expected_shape
+        or mae_differences.shape != expected_shape
+        or standard_deviations.shape != expected_shape
         or counts.shape != expected_shape
     ):
         raise ValueError(
             "Forma delle mappe inattesa: "
-            f"MAE {errors.shape}, varianza {variances.shape}, "
+            f"MAE modello {errors.shape}, MAE persistence "
+            f"{persistence_errors.shape}, "
+            f"differenza MAE {mae_differences.shape}, deviazione standard "
+            f"{standard_deviations.shape}, "
             f"conteggi {counts.shape}; attesa {expected_shape}."
         )
     coordinates = {
@@ -101,7 +108,9 @@ def build_annual_error_dataset(
     data_vars: dict[str, xr.DataArray] = {}
     for channel, variable in enumerate(variable_names):
         error_name = f"{variable}_mean_absolute_error"
-        variance_name = f"{variable}_error_variance"
+        persistence_error_name = f"{variable}_persistence_mean_absolute_error"
+        difference_name = f"{variable}_mae_difference_model_minus_persistence"
+        standard_deviation_name = f"{variable}_error_standard_deviation"
         count_name = f"{variable}_valid_count"
         data_vars[error_name] = xr.DataArray(
             errors[channel],
@@ -112,13 +121,39 @@ def build_annual_error_dataset(
                 "units": str(units.get(variable, "unknown")),
             },
         )
-        data_vars[variance_name] = xr.DataArray(
-            variances[channel],
+        data_vars[persistence_error_name] = xr.DataArray(
+            persistence_errors[channel],
             dims=("latitude", "longitude"),
             coords=coordinates,
             attrs={
-                "long_name": f"annual temporal variance of forecast error for {variable}",
-                "units": f"({units.get(variable, 'unknown')})^2",
+                "long_name": (
+                    f"annual persistence mean absolute error of {variable}"
+                ),
+                "units": str(units.get(variable, "unknown")),
+            },
+        )
+        data_vars[difference_name] = xr.DataArray(
+            mae_differences[channel],
+            dims=("latitude", "longitude"),
+            coords=coordinates,
+            attrs={
+                "long_name": (
+                    "annual MAE difference (model minus persistence) for "
+                    f"{variable}"
+                ),
+                "units": str(units.get(variable, "unknown")),
+            },
+        )
+        data_vars[standard_deviation_name] = xr.DataArray(
+            standard_deviations[channel],
+            dims=("latitude", "longitude"),
+            coords=coordinates,
+            attrs={
+                "long_name": (
+                    "annual temporal standard deviation of forecast error for "
+                    f"{variable}"
+                ),
+                "units": str(units.get(variable, "unknown")),
             },
         )
         data_vars[count_name] = xr.DataArray(
@@ -135,8 +170,9 @@ def build_annual_error_dataset(
             "forecast_count": int(result.forecast_count),
             "selected_depth_m": float(result.selected_depth_m),
             "aggregation": (
-                "mean(abs(forecast-observation)) and population variance of "
-                "(forecast-observation) over valid dates"
+                "model and persistence mean(abs(forecast-observation)), their "
+                "difference (model minus persistence), and population standard "
+                "deviation of the model signed error over valid dates"
             ),
         },
     )
@@ -145,25 +181,43 @@ def build_annual_error_dataset(
 def save_annual_error_outputs(
     dataset: xr.Dataset,
     output_directory: Path,
-) -> tuple[Path, Path, Path]:
-    """Salva NetCDF e pannelli 2x2 di MAE e varianza annuali."""
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Salva NetCDF e quattro pannelli 2x2 delle statistiche annuali."""
 
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
     target_year = int(dataset.attrs["target_year"])
     netcdf_path = output_directory / f"annual_mae_maps_{target_year}.nc"
     png_path = output_directory / f"annual_mae_maps_{target_year}.png"
-    variance_png_path = (
-        output_directory / f"annual_error_variance_maps_{target_year}.png"
+    standard_deviation_png_path = (
+        output_directory
+        / f"annual_error_standard_deviation_maps_{target_year}.png"
+    )
+    persistence_png_path = (
+        output_directory / f"annual_persistence_mae_maps_{target_year}.png"
+    )
+    difference_png_path = (
+        output_directory
+        / f"annual_mae_difference_model_minus_persistence_maps_{target_year}.png"
     )
     dataset.to_netcdf(netcdf_path)
     plot_annual_error_maps(dataset, png_path)
-    plot_annual_error_variance_maps(dataset, variance_png_path)
-    return netcdf_path, png_path, variance_png_path
+    plot_annual_error_standard_deviation_maps(
+        dataset, standard_deviation_png_path
+    )
+    plot_annual_persistence_error_maps(dataset, persistence_png_path)
+    plot_annual_mae_difference_maps(dataset, difference_png_path)
+    return (
+        netcdf_path,
+        png_path,
+        standard_deviation_png_path,
+        persistence_png_path,
+        difference_png_path,
+    )
 
 
 def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
-    """Disegna le quattro mappe MAE con scale limitate al 98° percentile."""
+    """Disegna le quattro mappe MAE del modello al 95° percentile."""
 
     return _plot_annual_maps(
         dataset,
@@ -174,18 +228,49 @@ def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
     )
 
 
-def plot_annual_error_variance_maps(
+def plot_annual_error_standard_deviation_maps(
     dataset: xr.Dataset,
     output_path: Path,
 ) -> Path:
-    """Disegna le quattro mappe della varianza temporale dell'errore."""
+    """Disegna le mappe della deviazione standard temporale dell'errore."""
 
     return _plot_annual_maps(
         dataset,
         output_path,
-        metric_suffix="_error_variance",
-        colorbar_label="Error variance",
-        title="Annual variance of one-day forecast error",
+        metric_suffix="_error_standard_deviation",
+        colorbar_label="Error standard deviation",
+        title="Annual standard deviation of one-day forecast error",
+    )
+
+
+def plot_annual_persistence_error_maps(
+    dataset: xr.Dataset,
+    output_path: Path,
+) -> Path:
+    """Disegna le quattro mappe MAE della baseline di persistence."""
+
+    return _plot_annual_maps(
+        dataset,
+        output_path,
+        metric_suffix="_persistence_mean_absolute_error",
+        colorbar_label="Persistence mean absolute error",
+        title="Annual mean absolute one-day persistence error",
+    )
+
+
+def plot_annual_mae_difference_maps(
+    dataset: xr.Dataset,
+    output_path: Path,
+) -> Path:
+    """Disegna la differenza MAE modello meno persistence, centrata su zero."""
+
+    return _plot_annual_maps(
+        dataset,
+        output_path,
+        metric_suffix="_mae_difference_model_minus_persistence",
+        colorbar_label="Model MAE − persistence MAE",
+        title="Annual MAE difference: model minus persistence",
+        diverging=True,
     )
 
 
@@ -196,8 +281,9 @@ def _plot_annual_maps(
     metric_suffix: str,
     colorbar_label: str,
     title: str,
+    diverging: bool = False,
 ) -> Path:
-    """Disegna un pannello 2x2 usando il 98° percentile come massimo."""
+    """Disegna un pannello 2x2 usando il 95° percentile come massimo."""
 
     import matplotlib
 
@@ -221,15 +307,21 @@ def _plot_annual_maps(
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             raise ValueError(f"La mappa {variable} non contiene valori validi.")
-        color_max = max(float(np.nanpercentile(finite, 98)), 1e-12)
+        color_max = max(float(np.nanpercentile(np.abs(finite), 95)), 1e-12)
+        color_limits = (
+            {"vmin": -color_max, "vmax": color_max}
+            if diverging
+            else {"vmin": 0.0, "vmax": color_max}
+        )
         mesh = axis.pcolormesh(
             longitudes,
             latitudes,
             np.ma.masked_invalid(values),
-            cmap=plt.get_cmap("magma").with_extremes(bad="#d9d9d9"),
+            cmap=plt.get_cmap("coolwarm" if diverging else "magma").with_extremes(
+                bad="#d9d9d9"
+            ),
             shading="auto",
-            vmin=0.0,
-            vmax=color_max,
+            **color_limits,
         )
         color_bar = figure.colorbar(mesh, ax=axis, pad=0.02, extend="max")
         color_bar.set_label(f"{colorbar_label} ({field.attrs['units']})")
