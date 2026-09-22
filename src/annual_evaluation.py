@@ -293,7 +293,7 @@ def _plot_annual_maps(
     variables = tuple(
         name.removesuffix(metric_suffix)
         for name in dataset.data_vars
-        if name.endswith(metric_suffix)
+        if name.endswith(metric_suffix) and "persistence" not in name
     )
     if len(variables) != 4:
         raise ValueError("La figura annuale richiede esattamente quattro variabili.")
