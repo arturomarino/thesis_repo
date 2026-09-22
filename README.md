@@ -197,7 +197,9 @@ targets. For the non-leap 1998 and 1999 splits this produces 364 forecasts.
 
 The following command evaluates temperature, salinity, zonal velocity and
 meridional velocity in their physical units, saves JSON/CSV tables, and creates
-the 2x2 surface map of pointwise annual mean absolute error:
+two 2x2 surface figures: pointwise annual mean absolute error and temporal
+variance of the signed forecast error. Each panel uses its 98th percentile as
+the color-scale maximum so isolated outliers do not hide the spatial pattern:
 
 ```bash
 python src/train.py \
@@ -217,8 +219,10 @@ python src/train.py \
 
 The output directory contains `physical_metrics_validation.json/.csv`,
 `physical_metrics_test.json/.csv`, `annual_mae_maps_1999.nc`, and
-`annual_mae_maps_1999.png`. The NetCDF stores both the mean absolute error and
-the number of valid dates at every grid cell. The legacy
+the figures `annual_mae_maps_1999.png` and
+`annual_error_variance_maps_1999.png`. The NetCDF stores the mean absolute
+error, population variance of the signed error, and number of valid dates at
+every grid cell. The legacy
 `--evaluate-temperature-validation` and `--evaluate-temperature-test` flags
 remain accepted as aliases for the multivariable evaluation.
 

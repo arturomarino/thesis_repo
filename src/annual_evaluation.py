@@ -81,11 +81,18 @@ def build_annual_error_dataset(
     """Converte i tensori aggregati in un dataset NetCDF auto-descrittivo."""
 
     errors = result.mean_absolute_error.numpy()
+    variances = result.error_variance.numpy()
     counts = result.valid_counts.numpy()
     expected_shape = (len(variable_names), len(latitudes), len(longitudes))
-    if errors.shape != expected_shape or counts.shape != expected_shape:
+    if (
+        errors.shape != expected_shape
+        or variances.shape != expected_shape
+        or counts.shape != expected_shape
+    ):
         raise ValueError(
-            f"Forma delle mappe inattesa: {errors.shape}, attesa {expected_shape}."
+            "Forma delle mappe inattesa: "
+            f"MAE {errors.shape}, varianza {variances.shape}, "
+            f"conteggi {counts.shape}; attesa {expected_shape}."
         )
     coordinates = {
         "latitude": np.asarray(latitudes),
@@ -94,6 +101,7 @@ def build_annual_error_dataset(
     data_vars: dict[str, xr.DataArray] = {}
     for channel, variable in enumerate(variable_names):
         error_name = f"{variable}_mean_absolute_error"
+        variance_name = f"{variable}_error_variance"
         count_name = f"{variable}_valid_count"
         data_vars[error_name] = xr.DataArray(
             errors[channel],
@@ -102,6 +110,15 @@ def build_annual_error_dataset(
             attrs={
                 "long_name": f"annual mean absolute error of {variable}",
                 "units": str(units.get(variable, "unknown")),
+            },
+        )
+        data_vars[variance_name] = xr.DataArray(
+            variances[channel],
+            dims=("latitude", "longitude"),
+            coords=coordinates,
+            attrs={
+                "long_name": f"annual temporal variance of forecast error for {variable}",
+                "units": f"({units.get(variable, 'unknown')})^2",
             },
         )
         data_vars[count_name] = xr.DataArray(
@@ -113,11 +130,14 @@ def build_annual_error_dataset(
     return xr.Dataset(
         data_vars,
         attrs={
-            "title": "Annual pointwise mean absolute forecast error",
+            "title": "Annual pointwise forecast error statistics",
             "target_year": int(target_year),
             "forecast_count": int(result.forecast_count),
             "selected_depth_m": float(result.selected_depth_m),
-            "aggregation": "mean(abs(forecast-observation)) over valid dates",
+            "aggregation": (
+                "mean(abs(forecast-observation)) and population variance of "
+                "(forecast-observation) over valid dates"
+            ),
         },
     )
 
@@ -125,21 +145,59 @@ def build_annual_error_dataset(
 def save_annual_error_outputs(
     dataset: xr.Dataset,
     output_directory: Path,
-) -> tuple[Path, Path]:
-    """Salva NetCDF e pannello PNG 2x2 delle mappe annuali."""
+) -> tuple[Path, Path, Path]:
+    """Salva NetCDF e pannelli 2x2 di MAE e varianza annuali."""
 
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
     target_year = int(dataset.attrs["target_year"])
     netcdf_path = output_directory / f"annual_mae_maps_{target_year}.nc"
     png_path = output_directory / f"annual_mae_maps_{target_year}.png"
+    variance_png_path = (
+        output_directory / f"annual_error_variance_maps_{target_year}.png"
+    )
     dataset.to_netcdf(netcdf_path)
     plot_annual_error_maps(dataset, png_path)
-    return netcdf_path, png_path
+    plot_annual_error_variance_maps(dataset, variance_png_path)
+    return netcdf_path, png_path, variance_png_path
 
 
 def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
-    """Disegna quattro pannelli, ognuno con una scala fisica indipendente."""
+    """Disegna le quattro mappe MAE con scale limitate al 98° percentile."""
+
+    return _plot_annual_maps(
+        dataset,
+        output_path,
+        metric_suffix="_mean_absolute_error",
+        colorbar_label="Mean absolute error",
+        title="Annual mean absolute one-day forecast error",
+    )
+
+
+def plot_annual_error_variance_maps(
+    dataset: xr.Dataset,
+    output_path: Path,
+) -> Path:
+    """Disegna le quattro mappe della varianza temporale dell'errore."""
+
+    return _plot_annual_maps(
+        dataset,
+        output_path,
+        metric_suffix="_error_variance",
+        colorbar_label="Error variance",
+        title="Annual variance of one-day forecast error",
+    )
+
+
+def _plot_annual_maps(
+    dataset: xr.Dataset,
+    output_path: Path,
+    *,
+    metric_suffix: str,
+    colorbar_label: str,
+    title: str,
+) -> Path:
+    """Disegna un pannello 2x2 usando il 98° percentile come massimo."""
 
     import matplotlib
 
@@ -147,9 +205,9 @@ def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
     import matplotlib.pyplot as plt
 
     variables = tuple(
-        name.removesuffix("_mean_absolute_error")
+        name.removesuffix(metric_suffix)
         for name in dataset.data_vars
-        if name.endswith("_mean_absolute_error")
+        if name.endswith(metric_suffix)
     )
     if len(variables) != 4:
         raise ValueError("La figura annuale richiede esattamente quattro variabili.")
@@ -158,11 +216,12 @@ def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
     mean_latitude = float(np.mean(latitudes))
     figure, axes = plt.subplots(2, 2, figsize=(16, 10), constrained_layout=True)
     for axis, variable in zip(axes.flat, variables, strict=True):
-        field = dataset[f"{variable}_mean_absolute_error"]
+        field = dataset[f"{variable}{metric_suffix}"]
         values = np.asarray(field.values, dtype=float)
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             raise ValueError(f"La mappa {variable} non contiene valori validi.")
+        color_max = max(float(np.nanpercentile(finite, 98)), 1e-12)
         mesh = axis.pcolormesh(
             longitudes,
             latitudes,
@@ -170,10 +229,10 @@ def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
             cmap=plt.get_cmap("magma").with_extremes(bad="#d9d9d9"),
             shading="auto",
             vmin=0.0,
-            vmax=max(float(finite.max()), 1e-12),
+            vmax=color_max,
         )
-        color_bar = figure.colorbar(mesh, ax=axis, pad=0.02)
-        color_bar.set_label(f"Mean absolute error ({field.attrs['units']})")
+        color_bar = figure.colorbar(mesh, ax=axis, pad=0.02, extend="max")
+        color_bar.set_label(f"{colorbar_label} ({field.attrs['units']})")
         axis.set(
             title=VARIABLE_LABELS.get(variable, variable),
             xlabel="Longitude (°)",
@@ -183,7 +242,7 @@ def plot_annual_error_maps(dataset: xr.Dataset, output_path: Path) -> Path:
         axis.set_aspect(1.0 / np.cos(np.deg2rad(mean_latitude)))
         axis.grid(color="black", alpha=0.15, linewidth=0.5)
     figure.suptitle(
-        "Annual mean absolute one-day forecast error — "
+        f"{title} — "
         f"{dataset.attrs['target_year']}\n"
         f"depth {float(dataset.attrs['selected_depth_m']):.3f} m | "
         f"{int(dataset.attrs['forecast_count'])} forecasts"

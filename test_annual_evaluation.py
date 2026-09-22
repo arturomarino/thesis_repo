@@ -24,6 +24,7 @@ def test_annual_error_outputs_preserve_counts_units_and_metadata(
         mean_absolute_error=torch.arange(16, dtype=torch.float64).reshape(
             4, 2, 2
         ),
+        error_variance=torch.arange(16, dtype=torch.float64).reshape(4, 2, 2),
         valid_counts=torch.full((4, 2, 2), 364, dtype=torch.int64),
         selected_depth_m=0.506,
         forecast_count=364,
@@ -42,14 +43,18 @@ def test_annual_error_outputs_preserve_counts_units_and_metadata(
         },
         target_year=1999,
     )
-    netcdf_path, png_path = save_annual_error_outputs(dataset, tmp_path)
+    netcdf_path, png_path, variance_png_path = save_annual_error_outputs(
+        dataset, tmp_path
+    )
 
     with xr.open_dataset(netcdf_path) as saved:
         assert saved.attrs["forecast_count"] == 364
         assert saved.attrs["selected_depth_m"] == 0.506
         assert saved["so_cglo_mean_absolute_error"].attrs["units"] == "1e-3"
+        assert saved["so_cglo_error_variance"].attrs["units"] == "(1e-3)^2"
         assert saved["vo_cglo_valid_count"].values.min() == 364
     assert png_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert variance_png_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_render_thesis_tables_contains_all_variables_and_metrics() -> None:

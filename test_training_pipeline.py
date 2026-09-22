@@ -254,8 +254,11 @@ def test_annual_error_map_is_pointwise_mean_absolute_error() -> None:
     assert result.valid_counts[0, 0, 0].item() == 1
     assert result.mean_absolute_error[0, 0, 0].item() == 1.0
     assert result.mean_absolute_error[0, 0, 1].item() == 3.0
+    assert result.error_variance[0, 0, 0].item() == 0.0
+    assert result.error_variance[0, 0, 1].item() == 9.0
     assert result.valid_counts[3, 0, 1].item() == 0
     assert torch.isnan(result.mean_absolute_error[3, 0, 1])
+    assert torch.isnan(result.error_variance[3, 0, 1])
 
 
 def test_fit_early_stops_after_patience_without_improvement(

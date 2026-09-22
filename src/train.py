@@ -261,7 +261,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-annual-errors-test",
         action="store_true",
-        help="Salva NetCDF e figura 2x2 del MAE punto-per-punto sul test.",
+        help=(
+            "Salva NetCDF e figure 2x2 di MAE e varianza dell'errore sul test."
+        ),
     )
     parser.add_argument(
         "--evaluation-output-directory",
@@ -955,7 +957,7 @@ def evaluate_annual_error_maps(
     split: xr.Dataset,
     device: torch.device,
 ) -> None:
-    """Genera NetCDF e pannello 2x2 del MAE superficiale annuale."""
+    """Genera NetCDF e pannelli 2x2 di MAE e varianza annuali."""
 
     variable_names, standards, depths, units = _physical_evaluation_inputs(
         statistics,
@@ -970,7 +972,7 @@ def evaluate_annual_error_maps(
         depth_values_m=depths,
         requested_depth_m=args.evaluation_depth,
         progress_label=(
-            "Test mappe annuali MAE" if not args.no_progress else None
+            "Test mappe annuali dell'errore" if not args.no_progress else None
         ),
     )
     years = np.unique(split["time"].dt.year.values)
@@ -984,7 +986,7 @@ def evaluate_annual_error_maps(
         units=units,
         target_year=int(years[0]),
     )
-    netcdf_path, png_path = save_annual_error_outputs(
+    netcdf_path, png_path, variance_png_path = save_annual_error_outputs(
         dataset,
         args.evaluation_output_directory,
     )
@@ -992,6 +994,7 @@ def evaluate_annual_error_maps(
     print(f"Profondita' della mappa: {result.selected_depth_m:.3f} m")
     print(f"Mappe NetCDF: {netcdf_path}")
     print(f"Figura annuale: {png_path}")
+    print(f"Figura varianza annuale: {variance_png_path}")
 
 
 def evaluate_temperature_checkpoint(

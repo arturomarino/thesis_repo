@@ -130,9 +130,10 @@ class PhysicalEvaluationResult:
 
 @dataclass(frozen=True)
 class AnnualErrorMapResult:
-    """Somma annuale ridotta a mappe MAE superficiali per canale."""
+    """Statistiche annuali dell'errore superficiale per canale."""
 
     mean_absolute_error: torch.Tensor
+    error_variance: torch.Tensor
     valid_counts: torch.Tensor
     selected_depth_m: float
     forecast_count: int
@@ -588,7 +589,7 @@ def run_annual_error_map_evaluation(
     requested_depth_m: float = 0.5,
     progress_label: str | None = None,
 ) -> AnnualErrorMapResult:
-    """Calcola il MAE punto-per-punto al livello verticale richiesto."""
+    """Calcola MAE e varianza dell'errore al livello verticale richiesto."""
 
     if standard_deviations.ndim != 2:
         raise ValueError("Gli standard devono avere forma [canale, profondita].")
@@ -602,7 +603,9 @@ def run_annual_error_map_evaluation(
     if not torch.isfinite(physical_std).all() or bool((physical_std <= 0).any()):
         raise ValueError("Gli standard fisici devono essere finiti e positivi.")
 
+    absolute_error_sum: torch.Tensor | None = None
     error_sum: torch.Tensor | None = None
+    squared_error_sum: torch.Tensor | None = None
     valid_counts: torch.Tensor | None = None
     forecast_count = 0
     model.eval()
@@ -637,27 +640,60 @@ def run_annual_error_map_evaluation(
                 raise ValueError("Forma della media prevista inattesa.")
 
             scale = physical_std[:, selected_depth_index].view(1, -1, 1, 1)
-            absolute_error = (
+            physical_error = (
                 mean[:, :, selected_depth_index]
                 - target[:, :, selected_depth_index]
-            ).abs() * scale
+            ) * scale
+            absolute_error = physical_error.abs()
             valid = mask[:, :, selected_depth_index]
-            batch_sum = torch.where(valid, absolute_error, 0.0).sum(dim=0)
+            batch_absolute_sum = torch.where(
+                valid, absolute_error, 0.0
+            ).sum(dim=0)
+            batch_error_sum = torch.where(
+                valid, physical_error, 0.0
+            ).sum(dim=0)
+            batch_squared_error_sum = torch.where(
+                valid, physical_error.square(), 0.0
+            ).sum(dim=0)
             batch_counts = valid.sum(dim=0, dtype=torch.int64)
-            if error_sum is None:
-                error_sum = torch.zeros_like(batch_sum, dtype=torch.float64)
+            if absolute_error_sum is None:
+                absolute_error_sum = torch.zeros_like(
+                    batch_absolute_sum, dtype=torch.float64
+                )
+                error_sum = torch.zeros_like(batch_error_sum, dtype=torch.float64)
+                squared_error_sum = torch.zeros_like(
+                    batch_squared_error_sum, dtype=torch.float64
+                )
                 valid_counts = torch.zeros_like(batch_counts, dtype=torch.int64)
-            error_sum += batch_sum.to(dtype=torch.float64)
+            absolute_error_sum += batch_absolute_sum.to(dtype=torch.float64)
+            error_sum += batch_error_sum.to(dtype=torch.float64)
+            squared_error_sum += batch_squared_error_sum.to(dtype=torch.float64)
             valid_counts += batch_counts
             forecast_count += int(target.shape[0])
 
-    if error_sum is None or valid_counts is None or forecast_count == 0:
+    if (
+        absolute_error_sum is None
+        or error_sum is None
+        or squared_error_sum is None
+        or valid_counts is None
+        or forecast_count == 0
+    ):
         raise ValueError("La valutazione annuale non contiene previsioni.")
-    mean_error = torch.full_like(error_sum, float("nan"))
+    mean_absolute_error = torch.full_like(absolute_error_sum, float("nan"))
+    error_variance = torch.full_like(error_sum, float("nan"))
     valid_cells = valid_counts > 0
-    mean_error[valid_cells] = error_sum[valid_cells] / valid_counts[valid_cells]
+    counts = valid_counts[valid_cells].to(dtype=torch.float64)
+    mean_absolute_error[valid_cells] = (
+        absolute_error_sum[valid_cells] / counts
+    )
+    mean_error = error_sum[valid_cells] / counts
+    error_variance[valid_cells] = torch.clamp(
+        squared_error_sum[valid_cells] / counts - mean_error.square(),
+        min=0.0,
+    )
     return AnnualErrorMapResult(
-        mean_absolute_error=mean_error.cpu(),
+        mean_absolute_error=mean_absolute_error.cpu(),
+        error_variance=error_variance.cpu(),
         valid_counts=valid_counts.cpu(),
         selected_depth_m=float(depth_values_m[selected_depth_index]),
         forecast_count=forecast_count,
