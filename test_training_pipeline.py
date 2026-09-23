@@ -261,7 +261,7 @@ def test_annual_error_map_contains_model_persistence_and_standard_deviation() ->
     assert result.mae_difference_model_minus_persistence[0, 0, 0].item() == -3.0
     assert result.mae_difference_model_minus_persistence[0, 0, 1].item() == 0.5
     assert result.error_standard_deviation[0, 0, 0].item() == 0.0
-    assert result.error_standard_deviation[0, 0, 1].item() == 3.0
+    assert result.error_standard_deviation[0, 0, 1].item() == 1.0
     assert result.valid_counts[3, 0, 1].item() == 0
     assert torch.isnan(result.mean_absolute_error[3, 0, 1])
     assert torch.isnan(result.persistence_mean_absolute_error[3, 0, 1])

@@ -150,8 +150,8 @@ def build_annual_error_dataset(
             coords=coordinates,
             attrs={
                 "long_name": (
-                    "annual temporal standard deviation of forecast error for "
-                    f"{variable}"
+                    "annual temporal standard deviation of absolute forecast "
+                    f"error for {variable}"
                 ),
                 "units": str(units.get(variable, "unknown")),
             },
@@ -172,7 +172,7 @@ def build_annual_error_dataset(
             "aggregation": (
                 "model and persistence mean(abs(forecast-observation)), their "
                 "difference (model minus persistence), and population standard "
-                "deviation of the model signed error over valid dates"
+                "deviation of the model absolute forecast error over valid dates"
             ),
         },
     )
@@ -239,7 +239,7 @@ def plot_annual_error_standard_deviation_maps(
         output_path,
         metric_suffix="_error_standard_deviation",
         colorbar_label="Error standard deviation",
-        title="Annual standard deviation of one-day forecast error",
+        title="Annual standard deviation of one-day absolute forecast error",
     )
 
 
@@ -268,8 +268,8 @@ def plot_annual_mae_difference_maps(
         dataset,
         output_path,
         metric_suffix="_mae_difference_model_minus_persistence",
-        colorbar_label="Model MAE − persistence MAE",
-        title="Annual MAE difference: model minus persistence",
+        colorbar_label="Bias: model MAE − persistence MAE",
+        title="Annual bias: model MAE minus persistence MAE",
         diverging=True,
     )
 

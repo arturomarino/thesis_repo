@@ -607,7 +607,7 @@ def run_annual_error_map_evaluation(
 
     absolute_error_sum: torch.Tensor | None = None
     persistence_absolute_error_sum: torch.Tensor | None = None
-    error_sum: torch.Tensor | None = None
+    absolute_error_sum_for_std: torch.Tensor | None = None
     squared_error_sum: torch.Tensor | None = None
     valid_counts: torch.Tensor | None = None
     forecast_count = 0
@@ -660,8 +660,8 @@ def run_annual_error_map_evaluation(
             batch_absolute_sum = torch.where(
                 valid, absolute_error, 0.0
             ).sum(dim=0)
-            batch_error_sum = torch.where(
-                valid, physical_error, 0.0
+            batch_absolute_error_sum_for_std = torch.where(
+                valid, absolute_error, 0.0
             ).sum(dim=0)
             batch_persistence_absolute_sum = torch.where(
                 valid, persistence_absolute_error, 0.0
@@ -677,7 +677,9 @@ def run_annual_error_map_evaluation(
                 persistence_absolute_error_sum = torch.zeros_like(
                     batch_persistence_absolute_sum, dtype=torch.float64
                 )
-                error_sum = torch.zeros_like(batch_error_sum, dtype=torch.float64)
+                absolute_error_sum_for_std = torch.zeros_like(
+                    batch_absolute_error_sum_for_std, dtype=torch.float64
+                )
                 squared_error_sum = torch.zeros_like(
                     batch_squared_error_sum, dtype=torch.float64
                 )
@@ -686,7 +688,9 @@ def run_annual_error_map_evaluation(
             persistence_absolute_error_sum += batch_persistence_absolute_sum.to(
                 dtype=torch.float64
             )
-            error_sum += batch_error_sum.to(dtype=torch.float64)
+            absolute_error_sum_for_std += batch_absolute_error_sum_for_std.to(
+                dtype=torch.float64
+            )
             squared_error_sum += batch_squared_error_sum.to(dtype=torch.float64)
             valid_counts += batch_counts
             forecast_count += int(target.shape[0])
@@ -694,7 +698,7 @@ def run_annual_error_map_evaluation(
     if (
         absolute_error_sum is None
         or persistence_absolute_error_sum is None
-        or error_sum is None
+        or absolute_error_sum_for_std is None
         or squared_error_sum is None
         or valid_counts is None
         or forecast_count == 0
@@ -707,7 +711,9 @@ def run_annual_error_map_evaluation(
     mae_difference_model_minus_persistence = torch.full_like(
         absolute_error_sum, float("nan")
     )
-    error_standard_deviation = torch.full_like(error_sum, float("nan"))
+    error_standard_deviation = torch.full_like(
+        absolute_error_sum_for_std, float("nan")
+    )
     valid_cells = valid_counts > 0
     counts = valid_counts[valid_cells].to(dtype=torch.float64)
     mean_absolute_error[valid_cells] = (
@@ -720,10 +726,11 @@ def run_annual_error_map_evaluation(
         mean_absolute_error[valid_cells]
         - persistence_mean_absolute_error[valid_cells]
     )
-    mean_error = error_sum[valid_cells] / counts
+    mean_absolute_error_for_std = absolute_error_sum_for_std[valid_cells] / counts
     error_standard_deviation[valid_cells] = torch.sqrt(
         torch.clamp(
-            squared_error_sum[valid_cells] / counts - mean_error.square(),
+            squared_error_sum[valid_cells] / counts
+            - mean_absolute_error_for_std.square(),
             min=0.0,
         )
     )
