@@ -1,0 +1,203 @@
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+import xarray as xr
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from models.autoencoder import (
+    VolumeAutoencoderConfig,
+    VolumeUNetAutoencoder,
+)
+from plot_temperature_forecast import (
+    VOLUME_VARIABLES,
+    calculate_temperature_error,
+    denormalize_temperature_forecast,
+    find_input_time_index,
+    prepare_normalized_input,
+    read_forecast_context_steps,
+    resolve_forecast_dates,
+    run_temperature_forecast,
+)
+
+
+def make_dataset(size: int = 8) -> xr.Dataset:
+    coordinates = {
+        "time": np.array(["2000-01-01", "2000-01-02"], dtype="datetime64[D]"),
+        "depth": np.arange(size, dtype=np.float32),
+        "latitude": np.arange(size, dtype=np.float32),
+        "longitude": np.arange(size, dtype=np.float32),
+    }
+    shape = (2, size, size, size)
+    return xr.Dataset(
+        {
+            variable: (
+                ("time", "depth", "latitude", "longitude"),
+                np.full(shape, channel + 2.0, dtype=np.float32),
+            )
+            for channel, variable in enumerate(VOLUME_VARIABLES)
+        },
+        coords=coordinates,
+    )
+
+
+def make_statistics(size: int = 8) -> xr.Dataset:
+    coordinates = {"depth": np.arange(size, dtype=np.float32)}
+    data_vars: dict[str, tuple[tuple[str], np.ndarray]] = {}
+    for variable in VOLUME_VARIABLES:
+        data_vars[f"{variable}_mean"] = (
+            ("depth",),
+            np.ones(size, dtype=np.float32),
+        )
+        data_vars[f"{variable}_std"] = (
+            ("depth",),
+            np.full(size, 2.0, dtype=np.float32),
+        )
+    return xr.Dataset(data_vars, coords=coordinates)
+
+
+def test_prepares_input_and_denormalizes_temperature() -> None:
+    dataset = make_dataset()
+    statistics = make_statistics()
+    mask = xr.DataArray(
+        np.ones((8, 8), dtype=bool),
+        dims=("latitude", "longitude"),
+        coords={
+            "latitude": dataset.latitude,
+            "longitude": dataset.longitude,
+        },
+    )
+    mask[0, 0] = False
+
+    time_index = find_input_time_index(dataset, "2000-01-01")
+    volume, valid_mask = prepare_normalized_input(
+        dataset,
+        statistics,
+        mask,
+        time_index,
+    )
+    forecast = denormalize_temperature_forecast(
+        np.full((8, 8, 8), 3.0, dtype=np.float32),
+        statistics,
+        valid_mask,
+        dataset,
+        np.datetime64("2000-01-02"),
+    )
+
+    assert volume.shape == (4, 8, 8, 8)
+    assert volume[0, 0, 1, 1].item() == 0.5
+    assert volume[0, 0, 0, 0].item() == 0.0
+    assert np.isnan(forecast.values[:, 0, 0]).all()
+    assert forecast.values[0, 1, 1] == 7.0
+    assert forecast.attrs["units"] == "degrees_C"
+
+
+def test_loads_checkpoint_and_runs_forecast(tmp_path: Path) -> None:
+    config = VolumeAutoencoderConfig(
+        input_channels=4,
+        output_channels=4,
+        base_channels=2,
+        latent_channels=4,
+    )
+    model = VolumeUNetAutoencoder(config)
+    checkpoint_path = tmp_path / "forecast.pt"
+    torch.save(
+        {
+            "epoch": 12,
+            "model_config": {
+                "input_channels": 4,
+                "output_channels": 4,
+                "base_channels": 2,
+                "latent_channels": 4,
+            },
+            "model_state_dict": model.state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    forecast, epoch = run_temperature_forecast(
+        checkpoint_path,
+        torch.zeros(4, 8, 8, 8),
+        torch.device("cpu"),
+    )
+
+    assert forecast.shape == (8, 8, 8)
+    assert epoch == 12
+
+
+def test_prepares_multiday_context_and_reads_it_from_checkpoint(
+    tmp_path: Path,
+) -> None:
+    dataset = make_dataset()
+    statistics = make_statistics()
+    mask = xr.DataArray(
+        np.ones((8, 8), dtype=bool),
+        dims=("latitude", "longitude"),
+        coords={
+            "latitude": dataset.latitude,
+            "longitude": dataset.longitude,
+        },
+    )
+    volume, _ = prepare_normalized_input(
+        dataset,
+        statistics,
+        mask,
+        time_index=1,
+        context_steps=2,
+    )
+    checkpoint_path = tmp_path / "context.pt"
+    torch.save(
+        {
+            "model_config": {
+                "input_channels": 12,
+                "output_channels": 4,
+                "base_channels": 2,
+                "latent_channels": 4,
+                "normalization": "none",
+            }
+        },
+        checkpoint_path,
+    )
+
+    assert volume.shape == (8, 8, 8, 8)
+    assert read_forecast_context_steps(checkpoint_path) == 3
+
+
+def test_resolves_user_selected_forecast_date() -> None:
+    input_date, forecast_day = resolve_forecast_dates(
+        input_date=None,
+        forecast_date="2000-08-15",
+    )
+
+    assert input_date == "2000-08-14"
+    assert forecast_day == np.datetime64("2000-08-15")
+
+
+def test_calculates_signed_temperature_error() -> None:
+    coordinates = {
+        "time": np.datetime64("2000-01-02"),
+        "depth": np.float32(0.5),
+        "latitude": np.array([40.0, 41.0]),
+        "longitude": np.array([10.0, 11.0]),
+    }
+    forecast = xr.DataArray(
+        [[12.0, 8.0], [10.0, np.nan]],
+        dims=("latitude", "longitude"),
+        coords=coordinates,
+    )
+    observed = xr.DataArray(
+        [[10.0, 10.0], [10.0, 9.0]],
+        dims=("latitude", "longitude"),
+        coords=coordinates,
+    )
+
+    error_map = calculate_temperature_error(forecast, observed)
+
+    assert error_map.values[0, 0] == 2.0
+    assert error_map.values[0, 1] == -2.0
+    assert error_map.values[1, 0] == 0.0
+    assert np.isnan(error_map.values[1, 1])
+    assert error_map.attrs["units"] == "degrees_C"

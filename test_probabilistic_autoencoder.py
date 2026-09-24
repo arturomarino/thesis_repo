@@ -88,3 +88,20 @@ def test_inference_converts_log_variance_and_samples() -> None:
         torch.full_like(mean, 2.0),
     )
     assert samples.shape == (3, 1, 2)
+
+
+def test_autoencoder_supports_context_channels_without_instance_norm() -> None:
+    model = VolumeUNetAutoencoder(
+        VolumeAutoencoderConfig(
+            input_channels=12,
+            output_channels=4,
+            base_channels=2,
+            latent_channels=4,
+            normalization="none",
+        )
+    )
+
+    output = model(torch.randn(1, 12, 8, 8, 8))
+
+    assert output["mean"].shape == (1, 4, 8, 8, 8)
+    assert output["log_variance"].shape == (1, 4, 8, 8, 8)

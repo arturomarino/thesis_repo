@@ -1,0 +1,209 @@
+\chapter{Experimental Evaluation}
+\label{chap:evaluation}
+
+\section{Evaluation Protocol}
+
+The experimental evaluation tests the ability of the selected model to forecast the next daily three-dimensional ocean state. Each inference sample contains three consecutive context days and one target one day after the final context state. All parameters are frozen during evaluation. The same preprocessing code, training-derived standardization statistics, variable order, and target masks used during training are restored before the network is called.
+
+The best v3 checkpoint, selected at epoch 94 through validation RMSE, is evaluated on the complete 1998 validation split and the previously unseen 1999 test split. Each contains 362 forecast pairs. The chronological split itself was defined in Chapter~\ref{chap:architecture}; it is not repeated here as an experimental result. The test metrics were inspected after the model configuration and checkpoint-selection procedure had been fixed.
+
+The aggregate evaluation can be reproduced with relative project paths using:
+
+\begin{lstlisting}[caption={Inference commands for the selected checkpoint.}]
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --evaluate-validation
+
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --evaluate-test
+\end{lstlisting}
+
+The commands execute forward passes over an entire split; the appearance of a validation progress bar does not indicate that training has restarted. No optimizer is created for these evaluation branches and no gradient or parameter update is performed.
+
+Temperature evaluation uses the same checkpoint and adds a requested physical depth. The routine automatically chooses the closest level available in the NetCDF coordinate and reports both that slice and an aggregate over all depths:
+
+\begin{lstlisting}[caption={Physical-unit temperature evaluation.}]
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --temperature-depth 0.5 \
+  --evaluate-temperature-validation
+
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --temperature-depth 0.5 \
+  --evaluate-temperature-test
+\end{lstlisting}
+
+The checkpoint is first loaded on the CPU so its configuration can define context length, channel dimensions, and internal normalization. The model is then constructed, weights are restored, and the complete object is moved to the selected evaluation device. This order prevents an inference command from silently evaluating a checkpoint with a model configuration taken from unrelated command-line defaults.
+
+\section{Persistence Reference}
+
+The neural forecast is compared with persistence. Given the latest input state $X_t$, persistence predicts
+
+\[
+\widehat{X}^{\mathrm{pers}}_{t+1}=X_t.
+\]
+
+This baseline has no trainable parameters and is evaluated over exactly the same targets, variables, depths, and masks as the neural model. It is particularly demanding at a 24-hour horizon because much of the ocean changes gradually. A neural model predicting the full state can achieve a low absolute error while still losing to persistence if it slightly smooths the input or introduces a small bias in regions that change little.
+
+Persistence is more informative here than a constant climatology because it uses the most recent state available to the network. It also provides a direct test of whether the neural mapping has learned the daily increment rather than only the typical absolute state.
+
+\section{Metrics and Aggregation}
+
+Deterministic accuracy is measured from the predicted mean. For $N$ valid elements,
+
+\begin{align}
+\mathrm{RMSE} &= \sqrt{\frac{1}{N}\sum_{i=1}^{N}(y_i-\mu_i)^2},\\
+\mathrm{MAE} &= \frac{1}{N}\sum_{i=1}^{N}|y_i-\mu_i|,\\
+\mathrm{Bias} &= \frac{1}{N}\sum_{i=1}^{N}(\mu_i-y_i).
+\end{align}
+
+The normalized aggregate RMSE and MAE pool all four variables, all depths, all horizontal ocean points, and all dates of a split. They are dimensionless because every channel and depth has been standardized. This aggregation permits variables with different physical units to contribute to one diagnostic, but it does not have a direct interpretation in degrees Celsius or metres per second. Temperature is therefore also evaluated separately after converting its residual and predicted standard deviation back to degrees Celsius.
+
+Skill relative to persistence is
+
+\[
+S_{\mathrm{RMSE}}=1-
+\frac{\mathrm{RMSE}_{\mathrm{model}}^2}
+{\mathrm{RMSE}_{\mathrm{pers}}^2}.
+\]
+
+A value above zero means that the neural mean has lower MSE than persistence; a value below zero means that persistence is more accurate. Because the score uses squared RMSE, even a modest difference between the two errors can produce a visibly negative value.
+
+The probabilistic score is the masked Gaussian NLL defined in Chapter~\ref{chap:architecture}. It is not repeated algebraically here. Two marginal interval coverages complement it:
+
+\begin{align}
+C_{68} &= \frac{1}{N}\sum_i
+\mathbf{1}(|y_i-\mu_i|\leq\sigma_i),\\
+C_{95} &= \frac{1}{N}\sum_i
+\mathbf{1}(|y_i-\mu_i|\leq1.96\sigma_i).
+\end{align}
+
+For a calibrated Gaussian forecast these fractions would approach 0.68 and 0.95 over a large homogeneous sample. Coverage alone is incomplete: a very wide interval can obtain high coverage without being sharp, and aggregate coverage can conceal miscalibration by location, variable, or depth. The mean predicted standard deviation is therefore reported beside coverage.
+
+The implementation accumulates sums and counts over batches before computing final metrics. RMSE is obtained from the total squared error and total valid-point count rather than by averaging daily RMSE values. This makes every valid tensor element contribute equally, independently of which batch contains it. The consequence is that dates and shallow/deep regions with different numbers of wet cells do not receive equal group weight. No latitude-area or vertical-thickness weighting is applied, so the results describe the discrete machine-learning grid and should not be interpreted as volume-weighted heat or momentum errors.
+
+Daily errors are temporally correlated, and the hundreds of millions of grid-point residuals are spatially correlated. The raw valid-point count therefore cannot be treated as a statistical sample size for a confidence interval. This thesis compares complete, identical splits deterministically and does not report formal significance tests. A future uncertainty analysis could use block bootstrap sampling over dates or physically defined regions to preserve part of that dependence.
+
+\section{Aggregate Validation and Test Results}
+
+Table~\ref{tab:overall-results} reports results over all normalized volumetric outputs. Validation RMSE was used for checkpoint selection, so the test row provides the less selection-biased assessment of final performance. The test RMSE increases from 0.1783 to 0.2013 and test MAE from 0.0843 to 0.0907, indicating a moderate shift between 1998 and 1999.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Aggregate forecasting results in standardized space. Values pool four variables and all depth levels. Skill is computed with respect to persistence.}
+\label{tab:overall-results}
+\begin{tabular}{lrrrrr}
+\toprule
+Split & Model RMSE & Model MAE & Pers. RMSE & Pers. MAE & Skill \\
+\midrule
+Validation (1998) & 0.178346 & 0.084323 & 0.169523 & 0.070185 & $-0.106798$ \\
+Test (1999) & 0.201313 & 0.090681 & 0.194290 & 0.076016 & $-0.073609$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The model does not surpass persistence on either split. On the test set its RMSE is approximately 3.6\% larger than persistence, and the squared-error skill is $-0.0736$. The MAE difference points in the same direction. This consistency across validation and test makes the result more credible than an isolated map: the weakness is not limited to the year used for model selection.
+
+The outcome does not mean that the network failed to learn. RMSE improved greatly relative to the first training epoch, and test predictions remain physically recognizable. It means that, for the stated one-day full-state objective, the learned mean is less accurate than copying the latest analysis. A likely mechanism is regression toward smooth conditional means. Persistence preserves every resolved structure at $t$, whereas an MSE- and likelihood-trained convolutional network can attenuate fronts and extrema whose exact displacement is uncertain.
+
+The normalized test RMSE ratio is $0.201313/0.194290\approx1.036$. RMSE skill squares this ratio, producing the more negative value $-0.0736$. On validation the error ratio is about 1.052 and the skill is $-0.1068$. The smaller test skill deficit does not imply that the test year is easier in absolute terms: both model and persistence errors increase in 1999, but their relative separation narrows.
+
+\section{Temperature in Physical Units}
+
+Temperature metrics were recomputed after multiplying normalized residuals and predicted standard deviations by the training standard deviation at each depth. The mean is unnecessary for error conversion because it cancels in the difference. Table~\ref{tab:temperature-results} reports an aggregate over all 46 depths and a near-surface slice at the closest available level to 0.5~m, namely 0.506~m.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Temperature accuracy in physical units. Bias is forecast minus target.}
+\label{tab:temperature-results}
+\begin{tabular}{llrrrrr}
+\toprule
+Split & Depth set & RMSE & MAE & Bias & Pers. RMSE & Skill \\
+ & & ($^{\circ}$C) & ($^{\circ}$C) & ($^{\circ}$C) & ($^{\circ}$C) & \\
+\midrule
+Validation & All depths & 0.177972 & 0.089926 & $-0.039526$ & 0.096098 & $-2.429840$ \\
+Validation & 0.506 m & 0.410446 & 0.268950 & $-0.020553$ & 0.208408 & $-2.878685$ \\
+Test & All depths & 0.188289 & 0.094891 & $-0.037977$ & 0.104206 & $-2.264900$ \\
+Test & 0.506 m & 0.418790 & 0.277157 & $-0.010528$ & 0.208271 & $-3.043294$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Surface prediction is clearly harder than the depth-aggregated task. On the 1999 test set the near-surface RMSE is 0.419$^{\circ}$C, more than twice the all-depth value. The network also loses more strongly to persistence near the surface. Daily surface fields contain sharper and faster-changing structures driven by air--sea exchange, mixing, and advection. The model receives no atmospheric forcing, which restricts its ability to infer those changes from ocean history alone.
+
+The negative temperature bias is small relative to RMSE but consistent across validation and test, especially in the all-depth aggregate. Persistence has approximately zero bias in the stored evaluation outputs. This suggests that part of the neural error is a systematic cool tendency, while most error remains spatially variable. The result motivates predicting increments relative to the latest input or adding an explicit persistence residual connection.
+
+Equivalent physical-unit diagnostics were not preserved for salinity and the two velocity components. Their values are therefore not fabricated from the normalized aggregate. Extending the evaluator to save per-variable, per-depth accumulators is a concrete reproducibility improvement described in Chapter~\ref{chap:conclusions}.
+
+\section{Qualitative Surface Case}
+
+Figures~\ref{fig:temperature-forecast} and~\ref{fig:temperature-error} show the forecast and signed error for 15 August 1999 at 0.506~m. The input context ends on 14 August, and the network uses the checkpoint from epoch 94. The date serves as a representative summer case for spatial inspection; it is not used to compute or select the aggregate scores, which include all 362 test pairs.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{temperature-forecast-1999-08-15-english.png}
+\caption{Forecast mean for potential temperature on 15 August 1999 at 0.506~m. The preceding three daily states form the input context. This panel displays the forecast only.}
+\label{fig:temperature-forecast}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{temperature-error-1999-08-15-english.png}
+\caption{Signed surface-temperature error for the same case, defined as forecast minus target. Red cells are warm errors and blue cells are cool errors.}
+\label{fig:temperature-error}
+\end{figure}
+
+The forecast reproduces the basin-scale summer pattern: warmer water dominates the southern and eastern part of the domain, while cooler values occur farther north and in the Atlantic portion of the grid. The error map is much less spatially uniform than the forecast. Large parts of the basin remain close to zero, but coherent cool errors appear along several northern and eastern boundary regions and across parts of the southern central basin. Smaller warm-error patches occur in the western and northern Mediterranean. The concentration of larger errors near coasts, islands, and sharp gradients is consistent with spatial smoothing and small position errors: when a front is shifted by one or two grid cells, adjacent red and blue residuals can appear even if its overall magnitude is plausible.
+
+One map cannot establish average model behaviour, and a second hand-selected date could introduce the same selection problem. For that reason, the interpretation above is subordinate to the complete-year metrics. A future evaluator should select cases by a declared rule---for example the median, 90th-percentile, and worst daily RMSE---and generate input, target, prediction, uncertainty, and error panels automatically.
+
+\section{Predictive Uncertainty}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Probabilistic diagnostics in standardized space for the complete volumetric output.}
+\label{tab:probabilistic-results}
+\begin{tabular}{lrrrr}
+\toprule
+Split & Gaussian NLL & Mean $\sigma$ & 68\% coverage & 95\% coverage \\
+\midrule
+Validation & $-2.175691$ & 0.125057 & 0.757 & 0.955 \\
+Test & $-2.002245$ & 0.127880 & 0.748 & 0.946 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The NLL values are negative because the additive Gaussian constant is omitted and densities in standardized continuous space can exceed one. The final validation NLL for the epoch-94 checkpoint is $-2.175691$. The separate checkpoint field $-2.216110$ is the minimum validation NLL encountered anywhere in the training history; it must not be attributed to epoch 94 because selection used RMSE.
+
+The 95\% coverage is close to its nominal value on validation and test. The 68\% coverage, however, is approximately 0.75 rather than 0.68. For a nominal one-standard-deviation interval, this indicates intervals that are conservative on aggregate. Temperature-only results strengthen that interpretation near the surface: validation/test 68\% coverage is 0.833/0.826, with mean predicted standard deviation 0.445/0.450$^{\circ}$C; the 95\% coverage is 0.979 on both splits. Across all depths, temperature coverage is 0.746/0.959 on validation and 0.736/0.949 on test, with mean standard deviation 0.123 and 0.125$^{\circ}$C respectively.
+
+These figures provide partial evidence that the uncertainty head responds to residual magnitude, but they do not demonstrate complete calibration. The intervals are marginal and pooled over heterogeneous variables and locations. No reliability curve, sharpness comparison, proper multivariate score, or out-of-distribution test was performed. Deterministic accuracy and probabilistic quality must also be separated: reasonable NLL and near-nominal 95\% coverage do not compensate for the negative RMSE skill of the predicted mean.
+
+\section{Discussion}
+
+The central experimental finding is robust across the two years and across normalized aggregate and physical temperature metrics: the compact 3D U-Net learns a plausible one-day mapping but does not improve on persistence. Three features of the setup help explain this result.
+
+First, the target is the full next-day state. Most of that field is already contained in the latest input, so the network spends capacity reconstructing a large persistent component. Predicting $X_{t+1}-X_t$ and adding it back through a fixed residual path would make the learning problem focus on the smaller daily change while preserving persistence as the zero-increment solution.
+
+Second, the six-year archive is small relative to the dimensionality of the output. After splitting, only 1,458 highly correlated daily training pairs are available. Each pair contains many grid cells, but those cells do not provide independent temporal examples of rare circulation and surface-forcing regimes. Increasing spatial sample count cannot substitute fully for longer temporal coverage.
+
+Third, the model observes no atmospheric forcing, boundary tendency, or sea-surface-height input. Surface heat fluxes and wind stress strongly affect near-surface temperature and currents, while sea-surface-height gradients contain information about circulation. Their absence is particularly relevant to the large surface-temperature skill deficit. Incorporating them requires an architecture that fuses two-dimensional and three-dimensional fields without artificial vertical replication.
+
+Other limitations concern the objective and evaluation. A single Gaussian per point cannot express multimodal futures or residual covariance. The fixed factor of two for temperature and for the auxiliary MSE was refined through a small number of runs rather than a systematic search. The aggregate normalized metric can conceal differences among salinity and velocity channels. These limitations define the next experiments rather than invalidating the implemented pipeline: data splitting, masking, normalization, resumable training, persistence comparison, and probabilistic diagnostics have all been verified end to end.

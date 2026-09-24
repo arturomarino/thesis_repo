@@ -1,0 +1,146 @@
+\chapter{Experimental Evaluation}
+\label{chap:evaluation}
+
+\section{Evaluation Protocol}
+
+The experimental evaluation tests the ability of the selected model to forecast the next daily three-dimensional ocean state. Each inference sample contains three consecutive context days and one target one day after the final context state. All parameters are frozen during evaluation. The same preprocessing code, training-derived standardization statistics, variable order, and target masks used during training are restored before the network is called.
+
+The best v3 checkpoint, selected at epoch 94 through validation RMSE, is evaluated on the complete 1998 validation year and the previously unseen 1999 test year. Because the model consumes three context days, the last two days of the preceding year are prepended to each evaluation period as inputs only. The first forecast uses 30--31 December and 1 January to predict 2 January; the last uses 28--30 December to predict 31 December. Thus each non-leap evaluation year contains 364 targets, all belonging to the year being evaluated. The chronological split itself was defined in Chapter~\ref{chap:architecture}; no target crosses a split boundary.
+
+The aggregate evaluation can be reproduced with relative project paths using:
+
+\begin{lstlisting}[caption={Inference commands for the selected checkpoint.}]
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --evaluate-validation
+
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --evaluate-test
+\end{lstlisting}
+
+The commands execute forward passes over an entire split; the appearance of a validation progress bar does not indicate that training has restarted. No optimizer is created for these evaluation branches and no gradient or parameter update is performed.
+
+Physical-unit evaluation uses the same checkpoint for temperature, salinity, zonal velocity, and meridional velocity. The routine automatically chooses the closest level to the requested depth and reports both that slice and an aggregate over all depths. The same run also writes machine-readable JSON and CSV results and the annual error maps:
+
+\begin{lstlisting}[caption={Annual physical-unit multivariable evaluation.}]
+python src/train.py --data-path data/copernicus.nc \
+  --mask-path data/masks/land_sea_mask.nc \
+  --stats-path data/processed/normalization_stats.nc \
+  --reuse-stats \
+  --checkpoint-path checkpoints/best_forecaster_v3.pt \
+  --evaluation-depth 0.5 \
+  --evaluate-physical-validation \
+  --evaluate-physical-test \
+  --plot-annual-errors-test
+\end{lstlisting}
+
+The checkpoint is first loaded on the CPU so its configuration can define context length, channel dimensions, and internal normalization. The model is then constructed, weights are restored, and the complete object is moved to the selected evaluation device. This order prevents an inference command from silently evaluating a checkpoint with a model configuration taken from unrelated command-line defaults.
+
+\section{Persistence Reference}
+
+The neural forecast is compared with persistence. Given the latest input state $X_t$, persistence predicts
+
+\[
+\widehat{X}^{\mathrm{pers}}_{t+1}=X_t.
+\]
+
+This baseline has no trainable parameters and is evaluated over exactly the same targets, variables, depths, and masks as the neural model. It is particularly demanding at a 24-hour horizon because much of the ocean changes gradually. A neural model predicting the full state can achieve a low absolute error while still losing to persistence if it slightly smooths the input or introduces a small bias in regions that change little.
+
+Persistence is more informative here than a constant climatology because it uses the most recent state available to the network. It also provides a direct test of whether the neural mapping has learned the daily increment rather than only the typical absolute state.
+
+\section{Metrics and Aggregation}
+
+Deterministic accuracy is measured from the predicted mean. For $N$ valid elements,
+
+\begin{align}
+\mathrm{RMSE} &= \sqrt{\frac{1}{N}\sum_{i=1}^{N}(y_i-\mu_i)^2},\\
+\mathrm{MAE} &= \frac{1}{N}\sum_{i=1}^{N}|y_i-\mu_i|,\\
+\mathrm{Bias} &= \frac{1}{N}\sum_{i=1}^{N}(\mu_i-y_i).
+\end{align}
+
+The normalized aggregate RMSE and MAE pool all four variables, all depths, all horizontal ocean points, and all dates of a split. They are dimensionless because every channel and depth has been standardized. Since such pooling can hide large differences among variables, residuals and predicted standard deviations are also converted back to the physical unit of each channel using the training standard deviation at the corresponding depth.
+
+Skill relative to persistence is
+
+\[
+S_{\mathrm{RMSE}}=1-
+\frac{\mathrm{RMSE}_{\mathrm{model}}^2}
+{\mathrm{RMSE}_{\mathrm{pers}}^2}.
+\]
+
+A value above zero means that the neural mean has lower MSE than persistence; a value below zero means that persistence is more accurate. Because the score uses squared RMSE, even a modest difference between the two errors can produce a visibly negative value.
+
+The probabilistic score is the masked Gaussian NLL defined in Chapter~\ref{chap:architecture}. It is not repeated algebraically here. Two marginal interval coverages complement it:
+
+\begin{align}
+C_{68} &= \frac{1}{N}\sum_i
+\mathbf{1}(|y_i-\mu_i|\leq\sigma_i),\\
+C_{95} &= \frac{1}{N}\sum_i
+\mathbf{1}(|y_i-\mu_i|\leq1.96\sigma_i).
+\end{align}
+
+For a calibrated Gaussian forecast these fractions would approach 0.68 and 0.95 over a large homogeneous sample. Coverage alone is incomplete: a very wide interval can obtain high coverage without being sharp, and aggregate coverage can conceal miscalibration by location, variable, or depth. The mean predicted standard deviation is therefore reported beside coverage.
+
+The implementation accumulates sums and counts over batches before computing final metrics. RMSE is obtained from the total squared error and total valid-point count rather than by averaging daily RMSE values. This makes every valid tensor element contribute equally, independently of which batch contains it. The consequence is that dates and shallow/deep regions with different numbers of wet cells do not receive equal group weight. No latitude-area or vertical-thickness weighting is applied, so the results describe the discrete machine-learning grid and should not be interpreted as volume-weighted heat or momentum errors.
+
+Daily errors are temporally correlated, and the hundreds of millions of grid-point residuals are spatially correlated. The raw valid-point count therefore cannot be treated as a statistical sample size for a confidence interval. This thesis compares complete, identical splits deterministically and does not report formal significance tests. A future uncertainty analysis could use block bootstrap sampling over dates or physically defined regions to preserve part of that dependence.
+
+\section{Annual Variable-wise Results}
+
+The deterministic and probabilistic tables are generated directly from the JSON artifacts emitted by the evaluator. They contain temperature, salinity, $u$, and $v$ results for all depths and for the available level nearest to 0.5~m, namely 0.506~m. This avoids transcribing values from the older 362-pair evaluation. The generated file is accepted only when both inputs declare exactly 364 forecasts.
+
+\InputIfFileExists{chapter/annual-results-generated.tex}{
+  \input{chapter/annual-results-generated.tex}
+}{
+  \begin{quote}\textit{Run the annual evaluator and \texttt{render\_thesis\_results.py} to insert the final 364-forecast tables.}\end{quote}
+}
+
+\section{Qualitative Example and Annual Spatial Error}
+
+Figure~\ref{fig:temperature-forecast} retains the forecast for 15 August 1999 at 0.506~m as an illustrative summer example. The input context ends on 14 August, and the network uses the checkpoint from epoch 94. This hand-selected field is not used to support quantitative claims.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{temperature-forecast-1999-08-15-english.png}
+\caption{Forecast mean for potential temperature on 15 August 1999 at 0.506~m. The preceding three daily states form the input context. This panel displays the forecast only.}
+\label{fig:temperature-forecast}
+\end{figure}
+
+For each surface grid point $p$ and variable $q$, the annual map is
+\[
+E_q(p)=\frac{1}{N_q(p)}\sum_{t=1}^{364}
+\left|\widehat{y}_{q,t}(p)-y_{q,t}(p)\right|,
+\]
+where $N_q(p)$ counts only dates for which the target is valid. Land cells and cells with no valid target remain masked. Figure~\ref{fig:annual-mae} shows the four variables in separate panels with independent physical scales.
+
+\begin{figure}[p]
+\centering
+\IfFileExists{img/annual-mae-maps-1999.png}{
+  \includegraphics[width=\textwidth]{annual-mae-maps-1999.png}
+}{
+  \fbox{\parbox[c][6cm][c]{0.9\textwidth}{\centering Run the annual evaluator to generate \texttt{annual-mae-maps-1999.png}.}}
+}
+\caption{Pointwise mean absolute one-day forecast error over 364 targets from 2 January to 31 December 1999 at 0.506~m. Temperature, salinity, zonal velocity $u$, and meridional velocity $v$ use separate colour scales and their native physical units.}
+\label{fig:annual-mae}
+\end{figure}
+
+The annual aggregation is more robust than a signed error map from one selected date: positive and negative residuals cannot cancel, while persistent coastal, frontal, or circulation-related error structures remain visible. The per-variable coverage values in Table~\ref{tab:physical-probabilistic-results} are marginal diagnostics; they should be interpreted together with mean predicted standard deviation and deterministic skill.
+
+\section{Discussion}
+
+The central experimental finding is robust across the two years and across normalized aggregate and physical temperature metrics: the compact 3D U-Net learns a plausible one-day mapping but does not improve on persistence. Three features of the setup help explain this result.
+
+First, the target is the full next-day state. Most of that field is already contained in the latest input, so the network spends capacity reconstructing a large persistent component. Predicting $X_{t+1}-X_t$ and adding it back through a fixed residual path would make the learning problem focus on the smaller daily change while preserving persistence as the zero-increment solution.
+
+Second, the six-year archive is small relative to the dimensionality of the output. After splitting, only 1,458 highly correlated daily training pairs are available. Each pair contains many grid cells, but those cells do not provide independent temporal examples of rare circulation and surface-forcing regimes. Increasing spatial sample count cannot substitute fully for longer temporal coverage.
+
+Third, the model observes no atmospheric forcing, boundary tendency, or sea-surface-height input. Surface heat fluxes and wind stress strongly affect near-surface temperature and currents, while sea-surface-height gradients contain information about circulation. Their absence is particularly relevant to the large surface-temperature skill deficit. Incorporating them requires an architecture that fuses two-dimensional and three-dimensional fields without artificial vertical replication.
+
+Other limitations concern the objective and evaluation. A single Gaussian per point cannot express multimodal futures or residual covariance. The fixed factor of two for temperature and for the auxiliary MSE was refined through a small number of runs rather than a systematic search. The aggregate normalized metric can conceal differences among salinity and velocity channels. These limitations define the next experiments rather than invalidating the implemented pipeline: data splitting, masking, normalization, resumable training, persistence comparison, and probabilistic diagnostics have all been verified end to end.
