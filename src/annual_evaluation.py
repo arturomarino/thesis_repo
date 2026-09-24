@@ -268,8 +268,8 @@ def plot_annual_mae_difference_maps(
         dataset,
         output_path,
         metric_suffix="_mae_difference_model_minus_persistence",
-        colorbar_label="Bias: model MAE − persistence MAE",
-        title="Annual bias: model MAE minus persistence MAE",
+        colorbar_label="Model MAE − persistence MAE",
+        title="Annual signed MAE difference: model minus persistence",
         diverging=True,
     )
 
@@ -326,7 +326,9 @@ def _plot_annual_maps(
             shading="auto",
             **color_limits,
         )
-        color_bar = figure.colorbar(mesh, ax=axis, pad=0.02, extend="max")
+        color_bar = figure.colorbar(
+            mesh, ax=axis, pad=0.02, extend="both" if diverging else "max"
+        )
         color_bar.set_label(f"{colorbar_label} ({field.attrs['units']})")
         axis.set(
             title=VARIABLE_LABELS.get(variable, variable),
