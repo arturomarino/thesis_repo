@@ -12,6 +12,29 @@ data/raw/*
 data/masks/*
 data/processed/*
 outputs/
+checkpoints/
+*.pt
+*.pth
+
+# Exported copies of the thesis
+/tesi.zip
+/thesis_overleaf*.zip
+/thesis_overleaf*/
+
+# LaTeX build files (the final PDF is a delivery artifact)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.synctex.gz
+*.toc
+/tesi/*.pdf
+!/tesi/main.pdf
 
 # Keep directory structure
 !data/raw/.gitkeep

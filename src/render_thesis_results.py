@@ -11,8 +11,14 @@ from pathlib import Path
 VARIABLE_LABELS = {
     "thetao_cglo": "Temperature",
     "so_cglo": "Salinity",
-    "uo_cglo": "Zonal velocity $u$",
-    "vo_cglo": "Meridional velocity $v$",
+    "uo_cglo": "Zonal $u$",
+    "vo_cglo": "Meridional $v$",
+}
+
+UNIT_LABELS = {
+    "degrees_C": r"$^\circ$C",
+    "1e-3": r"$10^{-3}$",
+    "m s-1": r"m\,s$^{-1}$",
 }
 
 
@@ -46,7 +52,8 @@ def render_tables(validation: dict[str, object], test: dict[str, object]) -> str
     probabilistic_rows: list[str] = []
     for record in records:
         variable = str(record["variable"])
-        unit = str(record["unit"]).replace("_", r"\_")
+        raw_unit = str(record["unit"])
+        unit = UNIT_LABELS.get(raw_unit, raw_unit.replace("_", r"\_"))
         scope = (
             "All"
             if record["scope"] == "all_depths"
@@ -58,12 +65,13 @@ def render_tables(validation: dict[str, object], test: dict[str, object]) -> str
             prefix
             + " & "
             + " & ".join(
-                f"{float(record[key]):.6f}"
+                f"{float(record[key]):.5f}"
                 for key in (
                     "model_rmse",
                     "model_mae",
                     "model_bias",
                     "persistence_rmse",
+                    "persistence_mae",
                     "rmse_skill_score",
                 )
             )
@@ -86,11 +94,12 @@ def render_tables(validation: dict[str, object], test: dict[str, object]) -> str
         (
             r"\begin{table}[p]",
             r"\centering\scriptsize",
+            r"\setlength{\tabcolsep}{4pt}",
             r"\caption{Physical-unit deterministic results over 364 annual forecasts. Bias is forecast minus target.}",
             r"\label{tab:physical-deterministic-results}",
-            r"\begin{tabular}{lllrrrrr}",
+            r"\begin{tabular}{lllrrrrrr}",
             r"\toprule",
-            r"Split & Variable & Depth & RMSE & MAE & Bias & Pers. RMSE & Skill \\",
+            r"Split & Variable & Depth & RMSE & MAE & Bias & Pers. RMSE & Pers. MAE & Skill \\",
             r"\midrule",
             *deterministic_rows,
             r"\bottomrule",

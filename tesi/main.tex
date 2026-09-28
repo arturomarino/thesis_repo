@@ -29,6 +29,13 @@
 \begin{document}
 \input{frontespizio}
 \frontmatter
+\chapter*{Abstract}
+\phantomsection
+\addcontentsline{toc}{chapter}{Abstract}
+This thesis develops and evaluates a probabilistic three-dimensional neural forecast of the Mediterranean ocean state. A compact 3D U-Net uses three consecutive daily analyses to predict next-day potential temperature, salinity, and horizontal velocities at 46 depth levels. Its two output heads estimate a mean and a Gaussian variance. Training uses a masked objective and a chronological split of a Copernicus Marine GLORYS12-derived dataset; evaluation compares the selected checkpoint with a one-day persistence forecast on the same valid grid points.
+
+The complete 1998 validation and 1999 test years each provide 364 forecast targets. At the 0.506~m level in 1999, the neural model has a temperature mean absolute error (MAE) of 0.277~$^{\circ}$C, compared with 0.146~$^{\circ}$C for persistence. Persistence also has lower surface MAE for salinity and both velocity components. Annual maps show the model and persistence MAE, the temporal standard deviation of the model's absolute errors, and their signed MAE difference. The temperature and salinity deficit extends across nearly the entire wet surface grid, whereas the current components have mixed regional gains and losses. The probabilistic output provides useful uncertainty diagnostics but does not reverse the deterministic skill deficit. The results establish a reproducible benchmark and motivate residual prediction of the daily change, additional physical predictors, and evaluation across longer forecast horizons.
+
 \tableofcontents
 \listoffigures
 \listoftables
@@ -39,6 +46,9 @@
 \include{chapter/prove_sperimentali}
 \include{chapter/conclusioni}
 \backmatter
+\clearpage
+\phantomsection
+\addcontentsline{toc}{chapter}{Bibliography}
 \bibliographystyle{unsrtnat}
 \bibliography{reference}
 \end{document}

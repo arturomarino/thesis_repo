@@ -1,13 +1,7 @@
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import xarray as xr
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from dataset import (
     OceanForecastDataset,

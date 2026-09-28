@@ -108,7 +108,7 @@ Each state contains the four volumetric variables. Concatenating three states al
 
 with input shape $[B,12,46,65,171]$ and target shape $[B,4,46,65,171]$. This notation describes the role of each axis once; the actual dimensions are used again in Table~\ref{tab:architecture-layers} only to document how the network transforms them.
 
-Because each sample needs three context days and one target day, the splits contain 1,458 training pairs, 362 validation pairs, and 362 test pairs. The first validation and test targets are constructed entirely inside their respective yearly split. This discards the final context days of the preceding year but makes the separation rule unambiguous.
+Because each sample needs three context days and one target day, the original within-split dataset contains 1,458 training pairs, 362 validation pairs, and 362 test pairs. Its first validation and test targets use context entirely within the respective year. The final full-year evaluation instead uses the last two days of the preceding year as context only, never as targets; this yields 364 validation and 364 test forecasts, as detailed in Chapter~\ref{chap:evaluation}.
 
 \section{Probabilistic 3D U-Net}
 

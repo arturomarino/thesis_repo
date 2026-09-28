@@ -1,11 +1,5 @@
-import sys
-from pathlib import Path
-
 import torch
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from losses import masked_gaussian_nll_loss
 from inference import gaussian_statistics, sample_gaussian_prediction

@@ -1,13 +1,9 @@
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 import xarray as xr
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from annual_evaluation import (
     build_annual_error_dataset,
@@ -110,5 +106,6 @@ def test_render_thesis_tables_contains_all_variables_and_metrics() -> None:
     assert "Physical-unit probabilistic diagnostics" in latex
     assert "Temperature" in latex
     assert "Salinity" in latex
-    assert "Zonal velocity $u$" in latex
-    assert "Meridional velocity $v$" in latex
+    assert "Zonal $u$" in latex
+    assert "Meridional $v$" in latex
+    assert "Pers. RMSE & Pers. MAE & Skill" in latex
