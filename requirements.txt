@@ -1,6 +1,7 @@
-dask[array]>=2026.6,<2027
-matplotlib>=3.10,<4
-netCDF4>=1.7,<2
-numpy>=2.4,<3
-torch>=2.13,<3
-xarray>=2026.4,<2027
+# Colab supplies a CUDA-compatible PyTorch build.  Do not install torch or
+# CUDA wheels here: pip can replace that build with an incompatible version.
+dask[array]>=2024,<2026.1.2
+matplotlib>=3.8,<4
+netCDF4>=1.6,<2
+numpy>=1.24,<2.3
+xarray>=2024,<2026

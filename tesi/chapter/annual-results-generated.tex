@@ -1,0 +1,56 @@
+\begin{table}[p]
+\centering\scriptsize
+\setlength{\tabcolsep}{4pt}
+\caption{Physical-unit deterministic results over 364 annual forecasts. Bias is forecast minus target.}
+\label{tab:physical-deterministic-results}
+\begin{tabular}{lllrrrrrr}
+\toprule
+Split & Variable & Depth & RMSE & MAE & Bias & Pers. RMSE & Pers. MAE & Skill \\
+\midrule
+Validation & Temperature ($^\circ$C) & All & 0.17763 & 0.08958 & -0.03890 & 0.09589 & 0.04502 & -2.43149 \\
+Validation & Temperature ($^\circ$C) & 0.506 m & 0.41020 & 0.26862 & -0.01929 & 0.20788 & 0.14340 & -2.89367 \\
+Validation & Salinity ($10^{-3}$) & All & 0.07160 & 0.02217 & 0.01211 & 0.04748 & 0.00772 & -1.27423 \\
+Validation & Salinity ($10^{-3}$) & 0.506 m & 0.18973 & 0.07961 & 0.03986 & 0.08609 & 0.01908 & -3.85704 \\
+Validation & Zonal $u$ (m\,s$^{-1}$) & All & 0.01752 & 0.00928 & -0.00047 & 0.01728 & 0.00882 & -0.02881 \\
+Validation & Zonal $u$ (m\,s$^{-1}$) & 0.506 m & 0.03732 & 0.02631 & -0.00093 & 0.03321 & 0.02271 & -0.26288 \\
+Validation & Meridional $v$ (m\,s$^{-1}$) & All & 0.01598 & 0.00856 & -0.00037 & 0.01658 & 0.00835 & 0.07097 \\
+Validation & Meridional $v$ (m\,s$^{-1}$) & 0.506 m & 0.03553 & 0.02583 & 0.00032 & 0.03422 & 0.02329 & -0.07842 \\
+Test & Temperature ($^\circ$C) & All & 0.18794 & 0.09455 & -0.03735 & 0.10397 & 0.04785 & -2.26732 \\
+Test & Temperature ($^\circ$C) & 0.506 m & 0.41860 & 0.27683 & -0.00928 & 0.20777 & 0.14564 & -3.05908 \\
+Test & Salinity ($10^{-3}$) & All & 0.07213 & 0.02271 & 0.01191 & 0.04477 & 0.00783 & -1.59633 \\
+Test & Salinity ($10^{-3}$) & 0.506 m & 0.19219 & 0.07889 & 0.03923 & 0.08541 & 0.01896 & -4.06285 \\
+Test & Zonal $u$ (m\,s$^{-1}$) & All & 0.01872 & 0.00980 & -0.00068 & 0.01875 & 0.00937 & 0.00313 \\
+Test & Zonal $u$ (m\,s$^{-1}$) & 0.506 m & 0.03818 & 0.02686 & -0.00093 & 0.03394 & 0.02334 & -0.26529 \\
+Test & Meridional $v$ (m\,s$^{-1}$) & All & 0.01700 & 0.00913 & -0.00060 & 0.01750 & 0.00889 & 0.05670 \\
+Test & Meridional $v$ (m\,s$^{-1}$) & 0.506 m & 0.03645 & 0.02637 & -0.00073 & 0.03439 & 0.02382 & -0.12324 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[p]
+\centering\scriptsize
+\caption{Physical-unit probabilistic diagnostics over the same annual forecasts.}
+\label{tab:physical-probabilistic-results}
+\begin{tabular}{lllrrr}
+\toprule
+Split & Variable & Depth & Mean $\sigma$ & 68\% coverage & 95\% coverage \\
+\midrule
+Validation & Temperature ($^\circ$C) & All & 0.122832 & 0.749025 & 0.959739 \\
+Validation & Temperature ($^\circ$C) & 0.506 m & 0.445210 & 0.833820 & 0.978935 \\
+Validation & Salinity ($10^{-3}$) & All & 0.025602 & 0.687881 & 0.944692 \\
+Validation & Salinity ($10^{-3}$) & 0.506 m & 0.090442 & 0.746352 & 0.956752 \\
+Validation & Zonal $u$ (m\,s$^{-1}$) & All & 0.013858 & 0.789721 & 0.956844 \\
+Validation & Zonal $u$ (m\,s$^{-1}$) & 0.506 m & 0.037914 & 0.755272 & 0.958670 \\
+Validation & Meridional $v$ (m\,s$^{-1}$) & All & 0.013154 & 0.795684 & 0.958516 \\
+Validation & Meridional $v$ (m\,s$^{-1}$) & 0.506 m & 0.033937 & 0.709480 & 0.940354 \\
+Test & Temperature ($^\circ$C) & All & 0.124849 & 0.738794 & 0.949917 \\
+Test & Temperature ($^\circ$C) & 0.506 m & 0.449665 & 0.825928 & 0.979179 \\
+Test & Salinity ($10^{-3}$) & All & 0.025908 & 0.696942 & 0.937503 \\
+Test & Salinity ($10^{-3}$) & 0.506 m & 0.090543 & 0.755580 & 0.957487 \\
+Test & Zonal $u$ (m\,s$^{-1}$) & All & 0.014053 & 0.774239 & 0.947604 \\
+Test & Zonal $u$ (m\,s$^{-1}$) & 0.506 m & 0.038108 & 0.748713 & 0.955055 \\
+Test & Meridional $v$ (m\,s$^{-1}$) & All & 0.013359 & 0.778566 & 0.948389 \\
+Test & Meridional $v$ (m\,s$^{-1}$) & 0.506 m & 0.034107 & 0.705973 & 0.935753 \\
+\bottomrule
+\end{tabular}
+\end{table}

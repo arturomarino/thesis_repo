@@ -1,12 +1,6 @@
-import sys
-from pathlib import Path
-
 import numpy as np
 import xarray as xr
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from split import TemporalSplitter
 
@@ -30,3 +24,9 @@ def test_last_year_is_test_and_previous_year_is_validation() -> None:
     assert splits.train.sizes["time"] == 24
     assert splits.validation.sizes["time"] == 12
     assert splits.test.sizes["time"] == 12
+    train_times = set(splits.train.time.values.tolist())
+    validation_times = set(splits.validation.time.values.tolist())
+    test_times = set(splits.test.time.values.tolist())
+    assert train_times.isdisjoint(validation_times)
+    assert train_times.isdisjoint(test_times)
+    assert validation_times.isdisjoint(test_times)
