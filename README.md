@@ -1,79 +1,79 @@
-# Previsione probabilistica dello stato oceanico
+# Probabilistic Ocean State Forecasting
 
-**Tesi di laurea in Ingegneria Informatica · Università del Salento**
+**Bachelor's thesis in Computer Engineering · University of Salento**
 
-Arturo Marino · Relatore: Prof. Italo Epicoco · A.A. 2025/2026
+Arturo Marino · Supervisor: Prof. Italo Epicoco · Academic year 2025/2026
 
-Una **U-Net 3D probabilistica** riceve tre giorni consecutivi di dati oceanografici e prevede lo stato del giorno successivo nel Mediterraneo. Per temperatura, salinità e correnti orizzontali stima sia il valore medio sia l'incertezza, usando dati di rianalisi Copernicus Marine.
+A **probabilistic 3D U-Net** takes three consecutive days of oceanographic data and predicts the following day's ocean state in the Mediterranean Sea. It estimates both the mean and uncertainty of temperature, salinity, and horizontal currents using Copernicus Marine reanalysis data.
 
-**Per consultare il lavoro:** [tesi in PDF](tesi/main.pdf) · [sorgenti LaTeX](tesi/) · [guida all'esecuzione](docs/esecuzione.md)
+**Explore the work:** [thesis PDF](tesi/main.pdf) · [LaTeX source](tesi/) · [execution guide (Italian)](docs/esecuzione.md)
 
-## Cosa fa il progetto
+## What the project does
 
-- Carica i NetCDF in modo lazy con Xarray e Dask, applicando la maschera terra–mare.
-- Separa gli anni in ordine cronologico e calcola la normalizzazione sul solo training set.
-- Costruisce finestre temporali di tre giorni e addestra una rete convoluzionale 3D con due uscite: media e log-varianza.
-- Confronta le previsioni con la **persistence**, che usa lo stato dell'ultimo giorno disponibile come previsione del successivo.
-- Produce metriche nelle unità fisiche, curve di apprendimento, mappe annuali e tabelle LaTeX.
+- Loads NetCDF files lazily with Xarray and Dask and applies a land–sea mask.
+- Splits the data chronologically and fits normalization statistics on the training set only.
+- Builds three-day temporal windows and trains a 3D convolutional network with two output heads: mean and log-variance.
+- Compares forecasts with **persistence**, which predicts the next day by copying the most recent available ocean state.
+- Produces physical-unit metrics, learning curves, annual error maps, and LaTeX tables.
 
-Il lavoro nasce dall'idea di un'estensione generativa di MedFormer. La versione consegnata implementa il previsore probabilistico U-Net 3D; la latent diffusion resta uno sviluppo futuro.
+The project originated as a proposed generative extension of MedFormer. The submitted implementation is a probabilistic 3D U-Net forecaster; latent diffusion remains future work.
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
-    A[NetCDF Copernicus] --> B[Maschera terra–mare]
-    B --> C[Split cronologico]
-    C --> D[Normalizzazione sul training]
-    D --> E[Contesto di 3 giorni]
-    E --> F[U-Net 3D]
-    F --> G[Media e varianza del giorno successivo]
-    G --> H[Metriche e confronto con persistence]
+    A[Copernicus NetCDF] --> B[Land–sea mask]
+    B --> C[Chronological split]
+    C --> D[Normalization fitted on training]
+    D --> E[Three-day context]
+    E --> F[3D U-Net]
+    F --> G[Next-day mean and variance]
+    G --> H[Metrics and persistence comparison]
 ```
 
-| Elemento | Configurazione dell'esperimento finale |
+| Component | Final experiment configuration |
 | --- | --- |
-| Variabili previste | `thetao_cglo` (temperatura), `so_cglo` (salinità), `uo_cglo` e `vo_cglo` (correnti) |
-| Griglia | 46 profondità × 65 latitudini × 171 longitudini |
-| Ingresso | 3 giorni × 4 variabili: `[B, 12, 46, 65, 171]` |
-| Uscite | Media e log-varianza, ciascuna `[B, 4, 46, 65, 171]` |
+| Predicted variables | `thetao_cglo` (temperature), `so_cglo` (salinity), `uo_cglo` and `vo_cglo` (currents) |
+| Grid | 46 depth levels × 65 latitudes × 171 longitudes |
+| Input | 3 days × 4 variables: `[B, 12, 46, 65, 171]` |
+| Outputs | Mean and log-variance, each `[B, 4, 46, 65, 171]` |
 | Training / validation / test | 1994–1997 / 1998 / 1999 |
-| Obiettivo | Gaussian NLL mascherata + MSE pesata sulla media |
-| Selezione del modello | RMSE di validation; checkpoint v3 selezionato all'epoca 94 |
+| Objective | Masked Gaussian NLL + weighted MSE on the predicted mean |
+| Model selection | Validation RMSE; v3 checkpoint selected at epoch 94 |
 
-L'altezza della superficie marina (`zos_cglo`) è gestita dalla pipeline dati, ma non è uno dei quattro canali previsti dal modello.
+Sea surface height (`zos_cglo`) is handled by the data pipeline but is not one of the model's four predicted channels.
 
-## Risultati principali
+## Main results
 
-La valutazione annuale comprende **364 previsioni** per ciascun anno di validation e test, dal 2 gennaio al 31 dicembre. I giorni precedenti all'inizio dell'anno servono soltanto come contesto.
+Annual evaluation includes **364 forecasts** for each validation and test year, from January 2 to December 31. Days preceding the start of the year are used only as input context.
 
-**MAE sul test 1999, a 0,506 m di profondità** — valori dalla [tabella completa della tesi](tesi/chapter/annual-results-generated.tex):
+**MAE on the 1999 test set at a depth of 0.506 m** — values from the [complete thesis results table](tesi/chapter/annual-results-generated.tex):
 
-| Variabile | U-Net 3D | Persistence | Unità |
+| Variable | 3D U-Net | Persistence | Unit |
 | --- | ---: | ---: | --- |
-| Temperatura | 0,27683 | **0,14564** | °C |
-| Salinità | 0,07889 | **0,01896** | 10⁻³ |
-| Corrente zonale `u` | 0,02686 | **0,02334** | m/s |
-| Corrente meridionale `v` | 0,02637 | **0,02382** | m/s |
+| Temperature | 0.27683 | **0.14564** | °C |
+| Salinity | 0.07889 | **0.01896** | 10⁻³ |
+| Zonal current `u` | 0.02686 | **0.02334** | m/s |
+| Meridional current `v` | 0.02637 | **0.02382** | m/s |
 
-La persistence ottiene un MAE inferiore per tutte le variabili in superficie. Sull'intera colonna d'acqua, il modello migliora leggermente l'RMSE delle due correnti, pur mantenendo un MAE maggiore. Le uscite probabilistiche permettono inoltre di misurare la copertura degli intervalli di previsione.
+Persistence achieves a lower surface MAE for all four variables. Across the full water column, the model slightly improves RMSE for both current components, while its MAE remains higher. The probabilistic outputs also allow the coverage of prediction intervals to be measured.
 
-La figura mostra **MAE del modello − MAE della persistence**: valori positivi indicano un errore maggiore del modello, valori negativi un miglioramento.
+The figure shows **model MAE − persistence MAE**: positive values indicate larger model errors, while negative values indicate an improvement.
 
-![Differenza del MAE annuale tra modello e persistence, test 1999](tesi/img/annual-mae-difference-1999.png)
+![Annual MAE difference between the model and persistence, 1999 test set](tesi/img/annual-mae-difference-1999.png)
 
 <details>
-<summary>Curva di apprendimento dell'esperimento finale</summary>
+<summary>Learning curve of the final experiment</summary>
 
-![NLL e RMSE durante il training, con confronto alla persistence](tesi/img/learning-curve-english.png)
+![Training NLL and RMSE, including the persistence reference](tesi/img/learning-curve-english.png)
 
-La storia comprende 96 epoche completate; il modello scelto è quello dell'epoca 94. Le metriche di training sono ricalcolate a pesi fissi dopo ogni epoca.
+The history includes 96 completed epochs; the selected model is from epoch 94. Training metrics are recomputed with fixed weights after each epoch.
 
 </details>
 
-## Avvio rapido
+## Quick start
 
-Ambiente verificato: **Python 3.11**. In locale serve PyTorch; in Google Colab è già disponibile e va mantenuta la build fornita dall'ambiente.
+Verified environment: **Python 3.11**. PyTorch must be installed locally. Google Colab already provides it; keep the build supplied by that environment.
 
 ```bash
 git clone https://github.com/arturomarino/thesis_repo.git
@@ -85,36 +85,36 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-I test usano piccoli dati sintetici e non richiedono il dataset completo o i checkpoint. Per una dimostrazione della pipeline fino a un passo di training:
+The tests use small synthetic datasets and do not require the full dataset or trained checkpoints. To demonstrate the pipeline through a single training step:
 
 ```bash
 python src/train.py --smoke-test-training
 ```
 
-Per lavorare sui dati reali, predisporre:
+To use real data, prepare the following files:
 
 ```text
 data/raw/copernicus.nc
 data/masks/land_sea_mask.nc
-data/processed/normalization_stats.nc  # da calcolare o riutilizzare
-checkpoints/best_forecaster_v3.pt     # per valutare il modello già addestrato
+data/processed/normalization_stats.nc  # compute or reuse compatible statistics
+checkpoints/best_forecaster_v3.pt     # needed to evaluate the trained model
 ```
 
-Dataset e checkpoint sono esterni alla repo. La [guida all'esecuzione](docs/esecuzione.md) raccoglie i riferimenti ai file, i comandi locali e Colab, il training e la rigenerazione dei risultati.
+Datasets and checkpoints are stored outside the repository. The [execution guide (Italian)](docs/esecuzione.md) provides file references, local and Colab commands, training instructions, and steps to regenerate the results.
 
-## Struttura della repository
+## Repository structure
 
 ```text
 thesis_repo/
-├── src/                    # Dati, modello, training, inferenza e visualizzazioni
-│   └── models/             # U-Net 3D e autoencoder probabilistico
-├── tests/                  # Test automatici su dati sintetici
-├── tesi/                   # Unica versione della tesi: PDF, LaTeX e figure
-├── docs/esecuzione.md       # Guida operativa e riproduzione dei risultati
-├── data/                   # Dataset, maschera e statistiche locali (ignorati da Git)
-├── requirements.txt        # Dipendenze della pipeline; PyTorch gestito separatamente
-├── requirements-dev.txt    # Dipendenze per eseguire i test
-└── pytest.ini              # Percorsi e raccolta dei test
+├── src/                    # Data pipeline, model, training, inference, and visualization
+│   └── models/             # 3D U-Net and probabilistic autoencoder
+├── tests/                  # Automated tests using synthetic data
+├── tesi/                   # Single final thesis version: PDF, LaTeX, and figures
+├── docs/esecuzione.md       # Execution guide and result reproduction (Italian)
+├── data/                   # Local dataset, mask, and statistics (ignored by Git)
+├── requirements.txt        # Pipeline dependencies; PyTorch managed separately
+├── requirements-dev.txt    # Dependencies for running the tests
+└── pytest.ini              # Test paths and collection settings
 ```
 
-`outputs/` e `checkpoints/` vengono creati durante l'esecuzione e sono esclusi da Git. Le figure e il PDF in `tesi/` sono i materiali della consegna. I dettagli dell'esperimento e i limiti della provenienza del checkpoint sono documentati nella [tesi](tesi/README.md).
+`outputs/` and `checkpoints/` are created during execution and excluded from Git. The figures and PDF in `tesi/` are the submission materials. Experiment details and checkpoint provenance limitations are documented in the [thesis notes (Italian)](tesi/README.md).
